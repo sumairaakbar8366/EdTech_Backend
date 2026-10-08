@@ -1,0 +1,37 @@
+{
+  "name": "schoolerp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SchoolERP backend API (NestJS + Prisma + PostgreSQL)",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "npm run build -w @schoolerp/shared && npm run build -w @schoolerp/api",
+    "build:shared": "npm run build -w @schoolerp/shared",
+    "dev": "npm run start:dev -w @schoolerp/api",
+    "dev:api": "npm run start:dev -w @schoolerp/api",
+    "start": "npm run start:prod -w @schoolerp/api",
+    "services:up": "docker compose up -d",
+    "services:down": "docker compose down",
+    "db:migrate": "npm run db:migrate -w @schoolerp/api",
+    "db:seed": "npm run db:seed -w @schoolerp/api",
+    "test": "npm run test -w @schoolerp/shared && npm run test -w @schoolerp/api",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "prettier": "^3.9.9"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.10.0": true,
+    "prisma@7.10.0": true,
+    "argon2@0.45.1": true
+  }
+}

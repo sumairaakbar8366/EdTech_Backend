@@ -1,0 +1,7 @@
+dist
+coverage
+node_modules
+apps/api/src/generated
+apps/api/prisma/migrations
+docs/architecture-board
+package-lock.json

@@ -1,0 +1,1 @@
+ALTER TABLE "school_applications" ADD COLUMN "preferred_brand_color" TEXT;
