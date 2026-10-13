@@ -4,7 +4,7 @@ import type { Response } from 'express';
 import { memoryStorage } from 'multer';
 import { CurrentAuth, Public, RequireAccess } from '../auth/decorators.js';
 import type { AppRequest, AuthContext } from '../common/request-context.js';
-import { DomainDto, SchoolSettingsDto } from './settings.dto.js';
+import { DomainDto, NotificationChannelsDto, SchoolSettingsDto } from './settings.dto.js';
 import { SettingsService } from './settings.service.js';
 
 type SchoolAuth = Extract<AuthContext, { scope: 'school' }>;
@@ -23,6 +23,17 @@ export class SettingsController {
   @Manage() @Patch('school')
   update(@CurrentAuth() a: SchoolAuth, @Body() dto: SchoolSettingsDto) {
     return this.settings.update(a.schoolId, dto);
+  }
+
+  /** Notification channels: email always; the admin picks SMS or WhatsApp (or off) for mobile messages. */
+  @Manage() @Get('notifications')
+  notifications(@CurrentAuth() a: SchoolAuth) {
+    return this.settings.notificationChannels(a.schoolId);
+  }
+
+  @Manage() @Patch('notifications')
+  setNotifications(@CurrentAuth() a: SchoolAuth, @Body() dto: NotificationChannelsDto) {
+    return this.settings.setMobileChannel(a.schoolId, dto.mobileChannel);
   }
 
   @Manage() @Post('school/logo')

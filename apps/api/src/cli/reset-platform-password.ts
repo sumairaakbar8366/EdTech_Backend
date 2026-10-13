@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import './no-jobs.js';
 import { NestFactory } from '@nestjs/core';
 import { temporaryPassword } from '../accounts/accounts.service.js';
 import { AppModule } from '../app.module.js';

@@ -9,7 +9,8 @@ import { AppModule } from './app.module.js';
 import type { Env } from './config/env.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // rawBody: payment gateway webhooks are verified against the exact bytes they signed.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
   const config = app.get<ConfigService<Env, true>>(ConfigService);
 
   // Only trust X-Forwarded-* when a known reverse proxy sits in front of the API.

@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import { AccountsService } from '../accounts/accounts.service.js';
+import { AccountsService, handover, type GeneratedLogin } from '../accounts/accounts.service.js';
 import { toDateOnly } from '../common/date-only.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
@@ -187,12 +187,18 @@ export class StudentsService {
 
   // --- Create / update ----------------------------------------------------------
 
-  create(schoolId: string, dto: CreateStudentDto) {
-    return this.prisma.inSchoolTransaction(schoolId, (tx) => this.createInTx(tx, schoolId, dto), { timeout: 20_000 });
+  async create(schoolId: string, dto: CreateStudentDto) {
+    const logins: GeneratedLogin[] = [];
+    const student = await this.prisma.inSchoolTransaction(schoolId, (tx) => this.createInTx(tx, schoolId, dto, logins), { timeout: 20_000 });
+    await this.accounts.announce(schoolId, logins);
+    return { ...student, credentials: logins.map(handover) };
   }
 
-  /** Creates a student with guardians and (optionally) enrollment and logins, in one transaction. */
-  async createInTx(tx: TenantTx, schoolId: string, dto: CreateStudentDto) {
+  /**
+   * Creates a student with guardians and (optionally) enrollment and logins, in one transaction.
+   * New logins are appended to `logins`; the caller emails them after the commit (`announce`).
+   */
+  async createInTx(tx: TenantTx, schoolId: string, dto: CreateStudentDto, logins: GeneratedLogin[] = []) {
     if (dto.dateOfBirth >= dto.admissionDate) throw new BadRequestException('Date of birth must be before the admission date');
     const primaries = dto.guardians.filter((g) => g.isPrimary).length;
     if (primaries > 1) throw new BadRequestException('Only one guardian can be the primary contact');
@@ -201,9 +207,11 @@ export class StudentsService {
     await assertStudentCapacity(tx, schoolId);
     const admissionNo = dto.admissionNo ?? (await nextAdmissionNo(tx));
 
-    const userId = dto.login
-      ? await this.accounts.createLogin(tx, schoolId, { email: dto.login.email, firstName: dto.firstName, lastName: dto.lastName }, ['student'], dto.login.password)
+    const login = dto.login
+      ? await this.accounts.createLogin(tx, schoolId, { email: dto.login.email, firstName: dto.firstName, lastName: dto.lastName, year: Number(dto.admissionDate.slice(0, 4)) }, ['student'], { password: dto.login.password })
       : null;
+    if (login) logins.push(login);
+    const userId = login?.userId ?? null;
 
     const student = await tx.student.create({
       data: {
@@ -223,7 +231,7 @@ export class StudentsService {
     for (const p of dto.previousSchools ?? []) await tx.studentPreviousSchool.create({ data: previousSchoolData(schoolId, student.id, p) });
 
     for (const [i, link] of dto.guardians.entries()) {
-      await this.linkGuardianInTx(tx, schoolId, student.id, { ...link, isPrimary: primaries === 0 ? i === 0 : !!link.isPrimary });
+      await this.linkGuardianInTx(tx, schoolId, student.id, { ...link, isPrimary: primaries === 0 ? i === 0 : !!link.isPrimary }, logins);
     }
     if (dto.enrollment) await this.enrollInTx(tx, schoolId, student.id, dto.enrollment, toDateOnly(dto.admissionDate));
     return student;
@@ -333,7 +341,7 @@ export class StudentsService {
     });
   }
 
-  private async linkGuardianInTx(tx: TenantTx, schoolId: string, studentId: string, dto: GuardianLinkDto) {
+  private async linkGuardianInTx(tx: TenantTx, schoolId: string, studentId: string, dto: GuardianLinkDto, logins: GeneratedLogin[] = []) {
     let guardianId = dto.guardianId;
     if (guardianId) {
       if (!(await tx.guardian.findUnique({ where: { id: guardianId }, select: { id: true } }))) throw new NotFoundException('Guardian not found');
@@ -343,9 +351,11 @@ export class StudentsService {
         throw new ConflictException(`A guardian with the email ${dto.details.email} already exists. Link the existing guardian instead.`);
       }
       if (dto.login && !dto.details.email) throw new BadRequestException('A parent login needs an email address');
-      const userId = dto.login
-        ? await this.accounts.createLogin(tx, schoolId, { ...dto.details, email: dto.details.email! }, ['parent'], dto.login.password)
+      const login = dto.login
+        ? await this.accounts.createLogin(tx, schoolId, { firstName: dto.details.firstName, lastName: dto.details.lastName, phone: dto.details.phone, email: dto.details.email }, ['parent'], { password: dto.login.password })
         : null;
+      if (login) logins.push(login);
+      const userId = login?.userId ?? null;
       guardianId = (await tx.guardian.create({ data: { schoolId, userId, ...dto.details } })).id;
     }
     if (await tx.studentGuardian.findUnique({ where: { studentId_guardianId: { studentId, guardianId } } })) {
@@ -356,26 +366,32 @@ export class StudentsService {
 
   // --- Logins -------------------------------------------------------------------
 
-  createStudentLogin(schoolId: string, id: string, dto: StudentLoginDto) {
-    return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+  async createStudentLogin(schoolId: string, id: string, dto: StudentLoginDto) {
+    const result = await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const s = await tx.student.findUnique({ where: { id } });
       if (!s) throw new NotFoundException('Student not found');
       if (s.userId) throw new ConflictException('This student already has a login');
       if (s.status !== 'active') throw new BadRequestException('Only active students can have a login');
-      const userId = await this.accounts.createLogin(tx, schoolId, { email: dto.email, firstName: s.firstName, lastName: s.lastName }, ['student'], dto.password);
-      return tx.student.update({ where: { id }, data: { userId }, select: { id: true, userId: true } });
+      const login = await this.accounts.createLogin(tx, schoolId, { email: dto.email, firstName: s.firstName, lastName: s.lastName, year: s.admissionDate.getUTCFullYear() }, ['student'], { password: dto.password });
+      await tx.student.update({ where: { id }, data: { userId: login.userId } });
+      return login;
     });
+    await this.accounts.announce(schoolId, [result]);
+    return { id, userId: result.userId, credentials: handover(result) };
   }
 
-  createGuardianLogin(schoolId: string, guardianId: string, password: string) {
-    return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+  async createGuardianLogin(schoolId: string, guardianId: string, password?: string) {
+    const result = await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const g = await tx.guardian.findUnique({ where: { id: guardianId } });
       if (!g) throw new NotFoundException('Guardian not found');
       if (g.userId) throw new ConflictException('This guardian already has a login');
       if (!g.email) throw new BadRequestException('Add an email address to the guardian first');
-      const userId = await this.accounts.createLogin(tx, schoolId, { ...g, email: g.email }, ['parent'], password);
-      return tx.guardian.update({ where: { id: guardianId }, data: { userId }, select: { id: true, userId: true } });
+      const login = await this.accounts.createLogin(tx, schoolId, { firstName: g.firstName, lastName: g.lastName, phone: g.phone, email: g.email }, ['parent'], { password });
+      await tx.guardian.update({ where: { id: guardianId }, data: { userId: login.userId } });
+      return login;
     });
+    await this.accounts.announce(schoolId, [result]);
+    return { id: guardianId, userId: result.userId, credentials: handover(result) };
   }
 
   // --- Enrollment & promotion ---------------------------------------------------

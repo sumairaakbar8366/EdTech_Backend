@@ -10,7 +10,7 @@ import {
   type AccessLevel,
   type Module,
 } from '@schoolerp/shared';
-import { PasswordService } from '../../auth/password.service.js';
+import { AccountsService } from '../../accounts/accounts.service.js';
 import { PrismaService, setSchool, type TenantTx } from '../../prisma/prisma.service.js';
 import { TenantResolverService } from '../../tenancy/tenant-resolver.service.js';
 import type { CreateSchoolDto } from './create-school.dto.js';
@@ -39,7 +39,7 @@ async function ensureLeaveTypes(tx: TenantTx, schoolId: string): Promise<number>
 export class SchoolProvisioningService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly passwords: PasswordService,
+    private readonly accounts: AccountsService,
     private readonly resolver: TenantResolverService,
   ) {}
 
@@ -93,8 +93,11 @@ export class SchoolProvisioningService {
     return new Map(rows.map((p) => [permissionKey(p.module as Module, p.action as AccessLevel), p.id]));
   }
 
-  /** `temporaryAdminPassword: false` only for development seeding (the demo login). */
-  async provision(dto: CreateSchoolDto, now: Date = new Date(), temporaryAdminPassword = true) {
+  /**
+   * `temporaryAdminPassword: false` for development seeding and self-service sign-up (the admin chose
+   * the password); `adminEmailVerified` when the sign-up already confirmed the email with a code.
+   */
+  async provision(dto: CreateSchoolDto, now: Date = new Date(), temporaryAdminPassword = true, adminEmailVerified = false) {
     if (RESERVED_SLUGS.has(dto.slug)) throw new BadRequestException('This slug is reserved');
     if (dto.timezone && !isValidTimeZone(dto.timezone)) throw new BadRequestException('Unknown timezone');
 
@@ -107,7 +110,6 @@ export class SchoolProvisioningService {
 
     await this.ensurePermissionCatalog();
     const permissionIds = await this.permissionIdMap();
-    const passwordHash = await this.passwords.hash(dto.admin.password);
     const { trialStartsAt, trialEndsAt } = trialPeriod(now);
 
     const result = await this.prisma.$transaction(
@@ -162,25 +164,19 @@ export class SchoolProvisioningService {
 
         await ensureLeaveTypes(tx, school.id);
 
-        const admin = await tx.user.create({
-          data: {
-            schoolId: school.id,
-            email: dto.admin.email,
-            passwordHash,
-            mustChangePassword: temporaryAdminPassword,
-            firstName: dto.admin.firstName,
-            lastName: dto.admin.lastName,
-          },
-        });
-        await tx.userRole.create({
-          data: { userId: admin.id, roleId: roleIds.get('school_admin')!, schoolId: school.id },
-        });
+        const admin = await this.accounts.createLogin(
+          tx,
+          school.id,
+          { firstName: dto.admin.firstName, lastName: dto.admin.lastName, email: dto.admin.email, emailVerified: adminEmailVerified },
+          ['school_admin'],
+          { password: dto.admin.password, temporary: temporaryAdminPassword },
+        );
 
         return {
           school,
           subscription: { id: subscription.id, status: subscription.status, tier: tier.code, trialStartsAt, trialEndsAt },
           mainCampus: { id: campus.id, name: campus.name, code: campus.code },
-          admin: { id: admin.id, email: admin.email },
+          admin: { id: admin.userId, email: admin.email, loginId: admin.loginId },
         };
       },
       { timeout: 20_000 },

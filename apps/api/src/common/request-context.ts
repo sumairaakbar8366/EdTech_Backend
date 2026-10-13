@@ -6,7 +6,8 @@ export type TenantContext =
 
 export type AuthContext =
   | { scope: 'platform'; adminId: string }
-  | { scope: 'school'; userId: string; schoolId: string };
+  /** `support`: the platform owner working inside the school ("Open as admin"), shown and audited as such. */
+  | { scope: 'school'; userId: string; schoolId: string; support?: { adminId: string; name: string } };
 
 export interface AppRequest extends Request {
   tenant?: TenantContext;

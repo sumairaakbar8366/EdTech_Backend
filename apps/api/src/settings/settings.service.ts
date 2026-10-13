@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException, PayloadTooLargeException } from '@nestjs/common';
+import { DeliveryService } from '../delivery/delivery.service.js';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { resolveCname, resolveTxt } from 'node:dns/promises';
@@ -20,10 +21,23 @@ export class SettingsService {
   private readonly baseDomain: string;
   private readonly platformHost: string;
 
+  /** Email is always on; mobile messages go by the channel the admin chose, if the platform has it set up. */
+  async notificationChannels(schoolId: string) {
+    const s = await this.prisma.forSchool(schoolId).schoolSettings.findUnique({ where: { schoolId }, select: { mobileChannel: true } });
+    const providers = this.delivery.channelProviders();
+    return { email: true, mobileChannel: (s?.mobileChannel ?? 'off') as 'off' | 'sms' | 'whatsapp', providers, live: { email: providers.email !== 'outbox', sms: providers.sms !== 'outbox', whatsapp: providers.whatsapp !== 'outbox', push: providers.push !== 'outbox' } };
+  }
+
+  async setMobileChannel(schoolId: string, mobileChannel: 'off' | 'sms' | 'whatsapp') {
+    await this.prisma.forSchool(schoolId).schoolSettings.update({ where: { schoolId }, data: { mobileChannel } });
+    return this.notificationChannels(schoolId);
+  }
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly storage: StorageService,
     private readonly resolver: TenantResolverService,
+    private readonly delivery: DeliveryService,
     config: ConfigService<Env, true>,
   ) {
     this.baseDomain = config.get('BASE_DOMAIN', { infer: true }).toLowerCase();

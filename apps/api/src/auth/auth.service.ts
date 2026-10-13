@@ -1,17 +1,24 @@
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Env } from '../config/env.js';
+import { normaliseLoginId } from '../accounts/accounts.service.js';
 import type { AuthContext, TenantContext } from '../common/request-context.js';
+import { DeliveryService } from '../delivery/delivery.service.js';
+import { WebUrls } from '../delivery/web-urls.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PermissionService } from '../rbac/permission.service.js';
+import { LoginEventsService, type LoginContext } from './login-events.service.js';
+import { LoginTicketService } from './login-ticket.service.js';
+import { PasswordResetService, RESET_TTL_MINUTES } from './password-reset.service.js';
 import { PasswordService } from './password.service.js';
 import { RefreshTokenService, type TokenSubject } from './refresh-token.service.js';
+import { VerificationCodesService } from './verification-codes.service.js';
 
 export type AccessTokenPayload =
   | { sub: string; scope: 'platform' }
   /** `pwc`: the password was set by an administrator and must be replaced before anything else. */
-  | { sub: string; scope: 'school'; sid: string; pwc?: true };
+  | { sub: string; scope: 'school'; sid: string; pwc?: true; sup?: string; supn?: string };
 
 export interface IssuedTokens {
   accessToken: string;
@@ -21,8 +28,13 @@ export interface IssuedTokens {
 
 const INVALID_CREDENTIALS = 'Invalid email or password';
 
+const INVALID_SCHOOL_CREDENTIALS = 'Invalid email (or User ID) or password';
+
+const ROLE_LABEL: Record<string, string> = { school_admin: 'Admin', accounts: 'Accounts', teacher: 'Teacher', non_teaching_staff: 'Staff', parent: 'Parent', student: 'Student' };
+
 @Injectable()
 export class AuthService {
+  private readonly log = new Logger(AuthService.name);
   private readonly accessTtl: number;
 
   constructor(
@@ -31,29 +43,69 @@ export class AuthService {
     private readonly passwords: PasswordService,
     private readonly refreshTokens: RefreshTokenService,
     private readonly permissions: PermissionService,
+    private readonly codes: VerificationCodesService,
+    private readonly resets: PasswordResetService,
+    private readonly tickets: LoginTicketService,
+    private readonly events: LoginEventsService,
+    private readonly delivery: DeliveryService,
+    private readonly urls: WebUrls,
     config: ConfigService<Env, true>,
   ) {
     this.accessTtl = config.get('JWT_ACCESS_TTL_SECONDS', { infer: true });
   }
 
-  /** Login is tenant-aware: the host decides whether this is a school user or a platform admin. */
-  async login(tenant: TenantContext, email: string, password: string): Promise<IssuedTokens> {
+  /**
+   * Login is tenant-aware. On a school's host people sign in with their own email (or, for a student
+   * without one, their User ID); on the platform host the owner signs in with an email. Every attempt
+   * is recorded in the login history.
+   */
+  async login(tenant: TenantContext, identifier: string, password: string, ctx: LoginContext = {}): Promise<IssuedTokens> {
     if (tenant.kind === 'platform') {
-      const admin = await this.prisma.platformAdmin.findUnique({ where: { email } });
+      const admin = await this.prisma.platformAdmin.findUnique({ where: { email: identifier.toLowerCase() } });
       const ok = await this.passwords.verify(admin?.passwordHash, password);
-      if (!admin || !ok || !admin.isActive) throw new UnauthorizedException(INVALID_CREDENTIALS);
+      if (!admin || !ok || !admin.isActive) {
+        await this.events.record({ ...ctx, platformAdminId: admin?.id, identifier, name: admin?.name, success: false, reason: !admin ? 'unknown account' : !ok ? 'wrong password' : 'disabled' });
+        throw new UnauthorizedException(INVALID_CREDENTIALS);
+      }
       await this.prisma.platformAdmin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
+      await this.events.record({ ...ctx, platformAdminId: admin.id, identifier, name: admin.name, roles: ['platform_owner'], success: true });
       return this.issue({ scope: 'platform', sub: admin.id });
     }
 
     const db = this.prisma.forSchool(tenant.schoolId);
-    const user = await db.user.findUnique({
-      where: { schoolId_email: { schoolId: tenant.schoolId, email } },
+    const byEmail = identifier.includes('@');
+    const user = await db.user.findFirst({
+      where: byEmail ? { email: identifier.trim().toLowerCase() } : { loginId: normaliseLoginId(identifier) },
+      include: { userRoles: { select: { role: { select: { key: true } } } } },
     });
     const ok = await this.passwords.verify(user?.passwordHash, password);
-    if (!user || !ok || user.status !== 'active') throw new UnauthorizedException(INVALID_CREDENTIALS);
+    const who = user && { userId: user.id, loginId: user.loginId, name: `${user.firstName} ${user.lastName}`, roles: user.userRoles.map((r) => r.role.key) };
+    if (!user || !ok || user.status !== 'active') {
+      await this.events.record({ ...ctx, ...who, schoolId: tenant.schoolId, identifier, success: false, reason: !user ? 'unknown account' : !ok ? 'wrong password' : 'disabled' });
+      throw new UnauthorizedException(INVALID_SCHOOL_CREDENTIALS);
+    }
     await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    await this.events.record({ ...ctx, ...who, schoolId: tenant.schoolId, identifier, success: true });
     return this.issue({ scope: 'school', sub: user.id, sid: tenant.schoolId }, user.mustChangePassword);
+  }
+
+  /** Exchanges a one-time ticket (sign-up hand-over) for a session on the school's own host. */
+  async exchangeTicket(tenant: TenantContext, token: string, ctx: LoginContext = {}): Promise<IssuedTokens> {
+    const ticket = await this.tickets.consume(token);
+    if (tenant.kind !== 'school' || tenant.schoolId !== ticket.schoolId) throw new BadRequestException('This sign-in link belongs to another school');
+    const user = await this.prisma.forSchool(ticket.schoolId).user.findUnique({ where: { id: ticket.userId }, select: { status: true, mustChangePassword: true, loginId: true, email: true, firstName: true, lastName: true } });
+    if (!user || user.status !== 'active') throw new UnauthorizedException('This account cannot sign in');
+    await this.prisma.forSchool(ticket.schoolId).user.update({ where: { id: ticket.userId }, data: { lastLoginAt: new Date() } });
+    if (ticket.purpose === 'support' && ticket.platformAdminId) {
+      // Owner support session: a normal session (it lasts until the owner signs out), marked as support
+      // so every change is audited under the owner's name.
+      const admin = await this.prisma.platformAdmin.findUnique({ where: { id: ticket.platformAdminId }, select: { name: true, email: true, isActive: true } });
+      if (!admin?.isActive) throw new UnauthorizedException('This support link is no longer valid');
+      await this.events.record({ ...ctx, schoolId: ticket.schoolId, userId: ticket.userId, platformAdminId: ticket.platformAdminId, loginId: user.loginId, identifier: admin.email, name: `Platform support · ${admin.name}`, roles: ['school_admin'], method: 'support', success: true });
+      return this.issue({ scope: 'school', sub: ticket.userId, sid: ticket.schoolId, sup: ticket.platformAdminId, supn: admin.name });
+    }
+    await this.events.record({ ...ctx, schoolId: ticket.schoolId, userId: ticket.userId, loginId: user.loginId, identifier: user.email ?? user.loginId, name: `${user.firstName} ${user.lastName}`, method: 'ticket', success: true });
+    return this.issue({ scope: 'school', sub: ticket.userId, sid: ticket.schoolId }, user.mustChangePassword);
   }
 
   /** Rotates the refresh token. The account must still be active and on this tenant. */
@@ -65,7 +117,7 @@ export class AuthService {
     const valid =
       subject.scope === 'platform'
         ? tenant.kind === 'platform' && (await this.isActivePlatformAdmin(subject.sub))
-        : schoolUser?.status === 'active';
+        : schoolUser?.status === 'active' && (!subject.sup || (await this.isActivePlatformAdmin(subject.sup)));
 
     if (!valid) {
       await this.refreshTokens.revoke(token);
@@ -89,11 +141,12 @@ export class AuthService {
 
     const user = await this.prisma.forSchool(auth.schoolId).user.findUniqueOrThrow({
       where: { id: auth.userId },
-      select: { id: true, email: true, firstName: true, lastName: true, phone: true, mustChangePassword: true },
+      select: { id: true, loginId: true, email: true, emailVerifiedAt: true, firstName: true, lastName: true, phone: true, mustChangePassword: true },
     });
     const access = await this.permissions.loadUserAccess(auth.schoolId, auth.userId);
     const school = tenant.kind === 'school' ? { id: tenant.schoolId, name: tenant.name, slug: tenant.slug } : null;
-    return { scope: 'school' as const, user, school, ...access };
+    const { emailVerifiedAt, ...rest } = user;
+    return { scope: 'school' as const, user: { ...rest, emailVerified: !!emailVerifiedAt }, school, ...access, support: auth.support ? { name: auth.support.name } : null };
   }
 
   /**
@@ -103,7 +156,7 @@ export class AuthService {
   async changePassword(auth: AuthContext, currentPassword: string, newPassword: string): Promise<IssuedTokens> {
     if (auth.scope !== 'school') throw new UnauthorizedException();
     const db = this.prisma.forSchool(auth.schoolId);
-    const user = await db.user.findUnique({ where: { id: auth.userId }, select: { passwordHash: true, status: true } });
+    const user = await db.user.findUnique({ where: { id: auth.userId }, select: { passwordHash: true, status: true, firstName: true, loginId: true, email: true, emailVerifiedAt: true } });
     if (!user || user.status !== 'active' || !(await this.passwords.verify(user.passwordHash, currentPassword))) {
       throw new BadRequestException('Your current password is not correct');
     }
@@ -111,7 +164,111 @@ export class AuthService {
     await db.user.update({ where: { id: auth.userId }, data: { passwordHash: await this.passwords.hash(newPassword), mustChangePassword: false } });
     const subject: TokenSubject = { scope: 'school', sub: auth.userId, sid: auth.schoolId };
     await this.refreshTokens.revokeAllFor(subject);
+    if (user.email && user.emailVerifiedAt) {
+      await this.delivery.trySend({ channel: 'email', to: user.email, template: 'password_changed', schoolId: auth.schoolId, data: { name: user.firstName, loginId: user.loginId, byAdmin: false } });
+    }
     return this.issue(subject);
+  }
+
+  // --- Forgotten password / User ID ----------------------------------------------------------
+
+  /**
+   * Emails a reset link to the account's verified email. Always answers the same way, so it cannot
+   * be used to find out which User IDs or emails exist.
+   */
+  async forgotPassword(tenant: TenantContext, identifier: string): Promise<void> {
+    try {
+      if (tenant.kind === 'platform') {
+        const admin = await this.prisma.platformAdmin.findUnique({ where: { email: identifier.trim().toLowerCase() } });
+        if (!admin?.isActive) return;
+        const token = await this.resets.create({ scope: 'platform', adminId: admin.id });
+        await this.delivery.send({ channel: 'email', to: admin.email, template: 'password_reset', data: { name: admin.name, url: this.urls.platform(`/reset-password?token=${token}`), minutes: RESET_TTL_MINUTES } });
+        return;
+      }
+      const user = await this.prisma.forSchool(tenant.schoolId).user.findFirst({
+        where: identifier.includes('@') ? { email: identifier.trim().toLowerCase() } : { loginId: normaliseLoginId(identifier) },
+        select: { id: true, status: true, email: true, emailVerifiedAt: true, firstName: true, loginId: true },
+      });
+      if (!user || user.status !== 'active' || !user.email || !user.emailVerifiedAt) return;
+      const token = await this.resets.create({ scope: 'school', schoolId: tenant.schoolId, userId: user.id });
+      await this.delivery.send({
+        channel: 'email',
+        to: user.email,
+        template: 'password_reset',
+        schoolId: tenant.schoolId,
+        data: { name: user.firstName, loginId: user.loginId, schoolName: tenant.name, url: this.urls.school(tenant.slug, `/reset-password?token=${token}`), minutes: RESET_TTL_MINUTES },
+      });
+    } catch (e) {
+      // Same answer either way; the failure is only logged.
+      this.log.error(`forgot-password failed: ${(e as Error).message}`);
+    }
+  }
+
+  async checkResetToken(token: string) {
+    return { valid: await this.resets.peek(token) };
+  }
+
+  /** Sets a new password from a reset link. All sessions of the account end. */
+  async resetPassword(tenant: TenantContext, token: string, newPassword: string): Promise<void> {
+    const subject = await this.resets.consume(token);
+    const hash = await this.passwords.hash(newPassword);
+    if (subject.scope === 'platform') {
+      if (tenant.kind !== 'platform') throw new BadRequestException('This reset link belongs to another site');
+      const admin = await this.prisma.platformAdmin.update({ where: { id: subject.adminId }, data: { passwordHash: hash } });
+      await this.refreshTokens.revokeAllFor({ scope: 'platform', sub: admin.id });
+      await this.delivery.trySend({ channel: 'email', to: admin.email, template: 'password_changed', data: { name: admin.name, byAdmin: false } });
+      return;
+    }
+    if (tenant.kind !== 'school' || tenant.schoolId !== subject.schoolId) throw new BadRequestException('This reset link belongs to another school');
+    const db = this.prisma.forSchool(subject.schoolId);
+    const user = await db.user.update({ where: { id: subject.userId }, data: { passwordHash: hash, mustChangePassword: false }, select: { email: true, firstName: true, loginId: true } });
+    await this.refreshTokens.revokeAllFor({ scope: 'school', sub: subject.userId, sid: subject.schoolId });
+    if (user.email) await this.delivery.trySend({ channel: 'email', to: user.email, template: 'password_changed', schoolId: subject.schoolId, data: { name: user.firstName, loginId: user.loginId, byAdmin: false, schoolName: tenant.name } });
+  }
+
+  /** Emails every User ID of this school whose verified email matches. Same answer either way. */
+  async forgotUserId(tenant: TenantContext, email: string): Promise<void> {
+    if (tenant.kind !== 'school') throw new BadRequestException('User IDs belong to a school site');
+    try {
+      const users = await this.prisma.forSchool(tenant.schoolId).user.findMany({
+        where: { email, emailVerifiedAt: { not: null }, status: 'active' },
+        select: { loginId: true, firstName: true, lastName: true, userRoles: { select: { role: { select: { key: true } } } } },
+        orderBy: { loginId: 'asc' },
+      });
+      if (!users.length) return;
+      await this.delivery.send({
+        channel: 'email',
+        to: email,
+        template: 'user_ids',
+        schoolId: tenant.schoolId,
+        data: {
+          schoolName: tenant.name,
+          signInUrl: this.urls.school(tenant.slug, '/login'),
+          accounts: users.map((u) => ({ loginId: u.loginId, name: `${u.firstName} ${u.lastName}`, role: u.userRoles.map((r) => ROLE_LABEL[r.role.key] ?? r.role.key).join(', ') })),
+        },
+      });
+    } catch (e) {
+      this.log.error(`forgot-user-id failed: ${(e as Error).message}`);
+    }
+  }
+
+  // --- Email verification (OTP) for the signed-in user ----------------------------------------
+
+  /** Sends a code to the account's email, or to a new address the person wants to use. */
+  async sendEmailCode(auth: AuthContext, tenant: TenantContext, email?: string) {
+    if (auth.scope !== 'school' || tenant.kind !== 'school') throw new BadRequestException('Only school accounts verify an email here');
+    const user = await this.prisma.forSchool(auth.schoolId).user.findUniqueOrThrow({ where: { id: auth.userId }, select: { email: true } });
+    const target = email ?? user.email;
+    if (!target) throw new BadRequestException('Enter your email address');
+    return this.codes.send({ owner: `user:${auth.schoolId}:${auth.userId}`, email: target, purpose: target === user.email ? 'verify' : 'change', schoolId: auth.schoolId, schoolName: tenant.name });
+  }
+
+  /** Confirms the code: the address becomes the account's verified email. */
+  async verifyEmailCode(auth: AuthContext, verificationId: string, code: string) {
+    if (auth.scope !== 'school') throw new BadRequestException('Only school accounts verify an email here');
+    const email = await this.codes.verify(verificationId, `user:${auth.schoolId}:${auth.userId}`, code);
+    await this.prisma.forSchool(auth.schoolId).user.update({ where: { id: auth.userId }, data: { email, emailVerifiedAt: new Date() } });
+    return { email, emailVerified: true };
   }
 
   /** Ends all sessions of a school user (after an administrator resets or disables the login). */
@@ -132,7 +289,7 @@ export class AuthService {
     const payload: AccessTokenPayload =
       subject.scope === 'platform'
         ? { sub: subject.sub, scope: 'platform' }
-        : { sub: subject.sub, scope: 'school', sid: subject.sid, ...(mustChangePassword && { pwc: true as const }) };
+        : { sub: subject.sub, scope: 'school', sid: subject.sid, ...(mustChangePassword && { pwc: true as const }), ...(subject.sup && { sup: subject.sup, supn: subject.supn }) };
     return { accessToken: this.jwt.sign(payload), expiresIn: this.accessTtl };
   }
 

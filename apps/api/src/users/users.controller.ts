@@ -2,7 +2,7 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patc
 import type { Response } from 'express';
 import { CurrentAuth, RequireAccess } from '../auth/decorators.js';
 import type { AuthContext } from '../common/request-context.js';
-import { CandidatesQuery, GrantAccessDto, ListUsersQuery, SetRolesDto, SetStatusDto } from './users.dto.js';
+import { CandidatesQuery, EmailCodeDto, GrantAccessDto, ListUsersQuery, SetEmailDto, SetRolesDto, SetStatusDto } from './users.dto.js';
 import { UsersService } from './users.service.js';
 
 type SchoolAuth = Extract<AuthContext, { scope: 'school' }>;
@@ -32,7 +32,18 @@ export class UsersController {
   @Admin() @Post()
   grant(@CurrentAuth() a: SchoolAuth, @Body() dto: GrantAccessDto, @Res({ passthrough: true }) res: Response) {
     res.setHeader('Cache-Control', 'no-store');
-    return this.users.grant(a.schoolId, dto);
+    return this.users.grant(a.schoolId, a.userId, dto);
+  }
+
+  /** Sends a 6-digit code to a person's email; they tell it to the admin to prove the address. */
+  @Admin() @Post('email-code') @HttpCode(HttpStatus.OK)
+  emailCode(@CurrentAuth() a: SchoolAuth, @Body() dto: EmailCodeDto) {
+    return this.users.sendEmailCode(a.schoolId, a.userId, dto.email);
+  }
+
+  @Admin() @Patch(':id/email')
+  setEmail(@CurrentAuth() a: SchoolAuth, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetEmailDto) {
+    return this.users.setEmail(a.schoolId, a.userId, id, dto);
   }
 
   @Admin() @Patch(':id/roles')

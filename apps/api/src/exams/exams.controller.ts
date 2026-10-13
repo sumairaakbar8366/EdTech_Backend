@@ -1,8 +1,9 @@
 import { Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Put, Query } from '@nestjs/common';
 import { CurrentAuth, RequireAccess } from '../auth/decorators.js';
 import type { AuthContext } from '../common/request-context.js';
-import { ExamDto, ExamListQuery, GradingScaleDto, MarksheetDto, MarksheetQuery, PapersDto, RemarksDto, SectionQuery, StudentQuery } from './exams.dto.js';
+import { CorrectResultDto, ExamDto, ExamListQuery, GradingScaleDto, MarksheetDto, MarksheetQuery, PapersDto, RemarksDto, ResultSearchQuery, SectionQuery, StudentQuery } from './exams.dto.js';
 import { ExamsService } from './exams.service.js';
+import { ResultCorrectionsService } from './result-corrections.service.js';
 
 type SchoolAuth = Extract<AuthContext, { scope: 'school' }>;
 const Id = () => new ParseUUIDPipe();
@@ -13,7 +14,10 @@ const Id = () => new ParseUUIDPipe();
  */
 @Controller('exams')
 export class ExamsController {
-  constructor(private readonly exams: ExamsService) {}
+  constructor(
+    private readonly exams: ExamsService,
+    private readonly corrections: ResultCorrectionsService,
+  ) {}
 
   @RequireAccess('exams', ['crud', 'view']) @Get('grading-scale')
   scale(@CurrentAuth() a: SchoolAuth) {
@@ -35,6 +39,23 @@ export class ExamsController {
   @RequireAccess('results', ['view', 'crud', 'enter']) @Get('report-cards/children')
   children(@CurrentAuth() a: SchoolAuth) {
     return this.exams.children(a);
+  }
+
+  /** Results & corrections: every report card of any exam / year, searchable (admins). */
+  @RequireAccess('results', ['crud']) @Get('report-cards/search')
+  searchCards(@CurrentAuth() a: SchoolAuth, @Query() q: ResultSearchQuery) {
+    return this.corrections.search(a.schoolId, q);
+  }
+
+  @RequireAccess('results', ['crud']) @Get('report-cards/:id/corrections')
+  cardForCorrection(@CurrentAuth() a: SchoolAuth, @Param('id', Id()) id: string) {
+    return this.corrections.detail(a.schoolId, id);
+  }
+
+  /** Change marks and / or pass-fail of any report card, even published or from earlier years. */
+  @RequireAccess('results', ['crud']) @Post('report-cards/:id/corrections') @HttpCode(HttpStatus.OK)
+  correct(@CurrentAuth() a: SchoolAuth, @Param('id', Id()) id: string, @Body() dto: CorrectResultDto) {
+    return this.corrections.correct(a.schoolId, a.userId, id, dto);
   }
 
   @RequireAccess('results', ['view', 'crud', 'enter']) @Get('report-cards/:id')

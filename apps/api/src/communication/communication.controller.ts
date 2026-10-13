@@ -1,4 +1,8 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, ParseUUIDPipe, Post, Query, DefaultValuePipe } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Headers, Param, ParseIntPipe, ParseUUIDPipe, Post, Query, DefaultValuePipe } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Type } from 'class-transformer';
+import { IsString, IsUrl, MaxLength, ValidateNested } from 'class-validator';
+import type { Env } from '../config/env.js';
 import { CurrentAuth, RequireAccess } from '../auth/decorators.js';
 import type { AuthContext } from '../common/request-context.js';
 import { AnnouncementDto, MessageDto, StartThreadDto } from './communication.dto.js';
@@ -12,9 +16,26 @@ const AnyRole = () => RequireAccess('communication', ['crud', 'view', 'own']);
 const Manage = () => RequireAccess('communication', ['crud']);
 const Converse = () => RequireAccess('communication', ['crud', 'own']);
 
+class PushKeysDto {
+  @IsString() @MaxLength(200) p256dh: string;
+  @IsString() @MaxLength(200) auth: string;
+}
+
+class PushSubscriptionDto {
+  @IsUrl({ protocols: ['https'], require_protocol: true, require_tld: false }) @MaxLength(1000) endpoint: string;
+  @ValidateNested() @Type(() => PushKeysDto) keys: PushKeysDto;
+}
+
+class PushEndpointDto {
+  @IsString() @MaxLength(1000) endpoint: string;
+}
+
 @Controller('notifications')
 export class NotificationsController {
-  constructor(private readonly notifications: NotificationsService) {}
+  constructor(
+    private readonly notifications: NotificationsService,
+    private readonly config: ConfigService<Env, true>,
+  ) {}
 
   @AnyRole() @Get()
   list(@CurrentAuth() a: SchoolAuth, @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number) {
@@ -29,6 +50,22 @@ export class NotificationsController {
   @AnyRole() @Post('read-all')
   readAll(@CurrentAuth() a: SchoolAuth) {
     return this.notifications.markAllRead(a.schoolId, a.userId);
+  }
+
+  /** The public VAPID key browsers need to subscribe (null when push is not set up on this server). */
+  @AnyRole() @Get('push/key')
+  pushKey() {
+    return { publicKey: this.config.get('PUSH_DRIVER', { infer: true }) === 'webpush' ? this.config.get('VAPID_PUBLIC_KEY', { infer: true }) ?? null : null };
+  }
+
+  @AnyRole() @Post('push/subscribe')
+  subscribe(@CurrentAuth() a: SchoolAuth, @Body() dto: PushSubscriptionDto, @Headers('user-agent') ua?: string) {
+    return this.notifications.subscribePush(a.schoolId, a.userId, dto, ua ?? null);
+  }
+
+  @AnyRole() @Post('push/unsubscribe')
+  unsubscribe(@CurrentAuth() a: SchoolAuth, @Body() dto: PushEndpointDto) {
+    return this.notifications.unsubscribePush(a.schoolId, a.userId, dto.endpoint);
   }
 
   @AnyRole() @Post(':id/read')

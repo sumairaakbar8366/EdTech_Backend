@@ -58,7 +58,7 @@ export class AuthGuard implements CanActivate {
       if (payload.pwc && !this.reflector.getAllAndOverride<boolean>(ALLOW_PENDING_PASSWORD, [context.getHandler(), context.getClass()])) {
         throw new ForbiddenException('Please change your password to continue');
       }
-      req.auth = { scope: 'school', userId: payload.sub, schoolId: tenant.schoolId };
+      req.auth = { scope: 'school', userId: payload.sub, schoolId: tenant.schoolId, ...(payload.sup && { support: { adminId: payload.sup, name: payload.supn ?? 'Platform owner' } }) };
       return true;
     }
     throw new UnauthorizedException();

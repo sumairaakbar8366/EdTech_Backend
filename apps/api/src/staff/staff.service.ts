@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { AccountsService } from '../accounts/accounts.service.js';
+import { AccountsService, handover } from '../accounts/accounts.service.js';
 import { toDateOnly } from '../common/date-only.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
@@ -137,8 +137,10 @@ export class StaffService {
     await assertStaffCapacity(tx, schoolId);
 
     const employeeNo = dto.employeeNo ?? (await nextEmployeeNo(tx));
-    // The login gets a school email by role; the personal email stays on the staff record.
-    const login = dto.login ? await this.accounts.createGeneratedLogin(tx, schoolId, dto, dto.login.roles) : null;
+    // Sign-in is by User ID (TCH-<joining year>-…); the personal email is the login's contact address.
+    const login = dto.login
+      ? await this.accounts.createLogin(tx, schoolId, { firstName: dto.firstName, lastName: dto.lastName, phone: dto.phone, email: dto.email, year: Number(String(dto.joinDate).slice(0, 4)) }, dto.login.roles)
+      : null;
     const userId = login?.userId ?? null;
 
     const employee = await tx.employee.create({
@@ -164,7 +166,7 @@ export class StaffService {
     await tx.employeeStatusHistory.create({
       data: { schoolId, employeeId: employee.id, fromStatus: null, toStatus: 'active', reason: historyReason, changedBy: actorUserId },
     });
-    return { ...employee, credentials: login ? { email: login.email, password: login.password } : null };
+    return { ...employee, login, credentials: login ? handover(login) : null };
   }
 
   update(schoolId: string, id: string, dto: UpdateEmployeeDto) {
@@ -239,9 +241,12 @@ export class StaffService {
       if (!EMPLOYED.includes(employee.status as (typeof EMPLOYED)[number])) {
         throw new BadRequestException('Only current staff can have a login');
       }
-      const login = await this.accounts.createGeneratedLogin(tx, schoolId, employee, dto.roles);
+      const login = await this.accounts.createLogin(tx, schoolId, { firstName: employee.firstName, lastName: employee.lastName, phone: employee.phone, email: employee.email, year: employee.joinDate.getUTCFullYear() }, dto.roles);
       await tx.employee.update({ where: { id }, data: { userId: login.userId } });
-      return { id, userId: login.userId, credentials: { email: login.email, password: login.password } };
+      return { id, userId: login.userId, login, credentials: handover(login) };
+    }).then(async ({ login, ...rest }) => {
+      await this.accounts.announce(schoolId, [login]);
+      return rest;
     });
   }
 

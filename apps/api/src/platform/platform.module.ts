@@ -5,11 +5,16 @@ import { SchoolsController } from './schools/schools.controller.js';
 import { TiersController } from './tiers/tiers.controller.js';
 import { TiersService } from './tiers/tiers.service.js';
 import { SchoolApplicationsController } from './applications/school-applications.controller.js';
+import { SystemController } from './system/system.controller.js';
+import { SignupController } from './signup/signup.controller.js';
+import { SignupService } from './signup/signup.service.js';
+import { ConsoleController } from './console/console.controller.js';
+import { ConsoleService } from './console/console.service.js';
 
 @Module({
   imports: [AuthModule],
-  controllers: [SchoolsController, TiersController, SchoolApplicationsController],
-  providers: [SchoolProvisioningService, TiersService],
+  controllers: [SchoolsController, TiersController, SchoolApplicationsController, SystemController, SignupController, ConsoleController],
+  providers: [SchoolProvisioningService, TiersService, SignupService, ConsoleService],
   exports: [SchoolProvisioningService],
 })
 export class PlatformModule {}

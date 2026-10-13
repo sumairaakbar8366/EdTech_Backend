@@ -1,4 +1,4 @@
-import { AccountsService } from '../accounts/accounts.service.js';
+import { AccountsService, type GeneratedLogin } from '../accounts/accounts.service.js';
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { toDateOnly } from '../common/date-only.js';
 import type { Prisma } from '../generated/prisma/client.js';
@@ -168,7 +168,8 @@ export class AdmissionsService {
         if (!section) throw new NotFoundException('Section not found');
         if (section.classId !== app.classId) throw new BadRequestException('Choose a section of the class the student applied for');
         if (dto.parentLogin && !app.guardianEmail) throw new BadRequestException('A parent login needs the guardian’s email on the application');
-        const credentials: { who: 'parent' | 'student'; name: string; email: string; password: string }[] = [];
+        const credentials: { who: 'parent' | 'student'; name: string; loginId: string; email: string | null; password: string }[] = [];
+        const logins: GeneratedLogin[] = [];
 
         // Siblings: reuse the guardian already registered with this email.
         const existing = app.guardianEmail
@@ -195,30 +196,36 @@ export class AdmissionsService {
           ],
           enrollment: { academicYearId: app.academicYearId, sectionId: dto.sectionId, rollNo: dto.rollNo },
           login: dto.studentLogin,
-        });
+        }, logins);
 
         // Generated logins by role ("usman.tariq.parent@…", "hania.usman.student@…"); a sibling's
         // parent who already has a login keeps it.
-        if (dto.createParentLogin && !dto.parentLogin) {
+        // People sign in with their own email: without one on the application the parent login waits.
+        if (dto.createParentLogin && !dto.parentLogin && app.guardianEmail) {
           const link = await tx.studentGuardian.findFirst({ where: { studentId: student.id, isPrimary: true }, select: { guardian: { select: { id: true, userId: true } } } });
           if (link && !link.guardian.userId) {
-            const login = await this.accounts.createGeneratedLogin(tx, schoolId, { firstName: app.guardianFirstName, lastName: app.guardianLastName, phone: app.guardianPhone }, ['parent']);
+            const login = await this.accounts.createLogin(tx, schoolId, { firstName: app.guardianFirstName, lastName: app.guardianLastName, phone: app.guardianPhone, email: app.guardianEmail }, ['parent']);
             await tx.guardian.update({ where: { id: link.guardian.id }, data: { userId: login.userId } });
-            credentials.push({ who: 'parent', name: `${app.guardianFirstName} ${app.guardianLastName}`, email: login.email, password: login.password });
+            credentials.push({ who: 'parent', name: login.name, loginId: login.loginId, email: login.email, password: login.password });
+            logins.push(login);
           }
         }
         if (dto.createStudentLogin && !dto.studentLogin) {
-          const login = await this.accounts.createGeneratedLogin(tx, schoolId, { firstName: app.firstName, lastName: app.lastName }, ['student']);
+          const login = await this.accounts.createLogin(tx, schoolId, { firstName: app.firstName, lastName: app.lastName, year: student.admissionDate.getUTCFullYear() }, ['student']);
           await tx.student.update({ where: { id: student.id }, data: { userId: login.userId } });
-          credentials.push({ who: 'student', name: `${app.firstName} ${app.lastName}`, email: login.email, password: login.password });
+          credentials.push({ who: 'student', name: login.name, loginId: login.loginId, email: null, password: login.password });
+          logins.push(login);
         }
 
         await tx.admissionStatusHistory.create({ data: { schoolId, applicationId: id, fromStatus: 'approved', toStatus: 'enrolled', note: `Enrolled as ${student.admissionNo}`, changedBy: actorUserId } });
         await tx.admissionApplication.update({ where: { id }, data: { status: 'enrolled', studentId: student.id } });
-        return { studentId: student.id, admissionNo: student.admissionNo, linkedExistingGuardian: !!existing, credentials };
+        return { studentId: student.id, admissionNo: student.admissionNo, linkedExistingGuardian: !!existing, credentials, logins };
       },
       { timeout: 30_000 },
-    );
+    ).then(async ({ logins, ...rest }) => {
+      await this.accounts.announce(schoolId, logins);
+      return rest;
+    });
   }
 }
 

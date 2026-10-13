@@ -121,6 +121,8 @@ model SchoolApplication {
   requestedTierCode   String?                 @map("requested_tier_code")
   preferredBrandColor String?                 @map("preferred_brand_color")
   notes               String?
+  /// "application" (reviewed by the owner) or "self_signup" (school created at once on a free trial).
+  source              String                  @default("application")
   status              SchoolApplicationStatus @default(pending)
   schoolId            String?                 @unique @map("school_id") @db.Uuid
   reviewedAt          DateTime?               @map("reviewed_at") @db.Timestamptz(3)
@@ -277,6 +279,13 @@ model School {
   documentRequests      DocumentRequest[]
   documentRequestEvents DocumentRequestEvent[]
 
+  outboundMessages         OutboundMessage[]
+  loginIds                 LoginId[]
+  loginEvents              LoginEvent[]
+  applicationStatusHistory ApplicationStatusHistory[]
+  pushSubscriptions        PushSubscription[]
+  reportCardChanges        ReportCardChange[]
+
   @@map("schools")
 }
 
@@ -311,6 +320,13 @@ model SchoolSettings {
 
   /// ISO weekdays the school is closed (1 = Monday ... 7 = Sunday). Used to count leave days.
   weeklyOffDays Int[] @default([7]) @map("weekly_off_days")
+
+  /// Every notification also goes by email (always). The admin picks the extra mobile channel:
+  /// "off", "sms" or "whatsapp".
+  mobileChannel String @default("off") @map("mobile_channel")
+
+  /// Own-domain add-on: paid yearly; until this date the school may use its own domain.
+  customDomainUntil DateTime? @map("custom_domain_until") @db.Timestamptz(3)
 
   @@map("school_settings")
 }
@@ -355,12 +371,16 @@ enum UserStatus {
   @@map("user_status")
 }
 
-/// Per-school accounts: email is unique within a school. RLS-protected.
+/// Per-school accounts. People sign in with their User ID (login_id); the email is their personal
+/// address (OTP-verified), used for messages, password reset and "forgot User ID". RLS-protected.
 model User {
   id                 String     @id @default(uuid(7)) @db.Uuid
   schoolId           String     @map("school_id") @db.Uuid
-  /// Stored lowercased.
-  email              String
+  /// Structured sign-in ID, e.g. "TCH-2026-0007". Issued once from login_ids; a trigger refuses changes.
+  loginId            String     @map("login_id")
+  /// Personal email, stored lowercased. Not unique: a young student may share a parent's address.
+  email              String?
+  emailVerifiedAt    DateTime?  @map("email_verified_at") @db.Timestamptz(3)
   passwordHash       String?    @map("password_hash")
   firstName          String     @map("first_name")
   lastName           String     @map("last_name")
@@ -385,9 +405,15 @@ model User {
   threadParticipations MessageThreadParticipant[] @relation("ThreadParticipant")
   sentMessages         Message[]                  @relation("MessageSender")
 
-  @@unique([schoolId, email])
+  pushSubscriptions PushSubscription[]
+  loginIdRecord     LoginId?
+
+  @@unique([schoolId, loginId])
   /// Target for composite FKs that guarantee same-school links.
   @@unique([id, schoolId])
+  /// People sign in with their email: unique per school where set.
+  @@unique([schoolId, email], map: "users_school_id_email_unique", where: raw("email IS NOT NULL"))
+  @@index([schoolId, email])
   @@map("users")
 }
 
@@ -722,6 +748,9 @@ model Employee {
   tasks        StaffTask[]
   bankAccounts EmployeeBankAccount[]
 
+  teacherRow     Teacher?
+  nonTeachingRow NonTeachingStaff?
+
   @@unique([userId, schoolId])
   @@unique([schoolId, employeeNo])
   @@unique([schoolId, email])
@@ -907,37 +936,81 @@ model JobPost {
 
 /// A candidate's application: personal info, education, experience, previous schools and references.
 model JobApplication {
-  id              String            @id @default(uuid(7)) @db.Uuid
-  schoolId        String            @map("school_id") @db.Uuid
+  id                   String            @id @default(uuid(7)) @db.Uuid
+  schoolId             String            @map("school_id") @db.Uuid
   /// "office" (entered by staff) or "website" (submitted on the school's public site).
-  source          String            @default("office")
-  jobPostId       String            @map("job_post_id") @db.Uuid
-  firstName       String            @map("first_name")
-  lastName        String            @map("last_name")
+  source               String            @default("office")
+  jobPostId            String            @map("job_post_id") @db.Uuid
+  firstName            String            @map("first_name")
+  lastName             String            @map("last_name")
   /// Stored lowercased.
-  email           String
-  phone           String?
-  education       String?
-  experienceYears Int?              @map("experience_years")
-  experience      String?
-  previousSchools String?           @map("previous_schools")
-  references      String?
-  coverNote       String?           @map("cover_note")
-  status          ApplicationStatus @default(applied)
-  employeeId      String?           @unique @map("employee_id") @db.Uuid
-  createdAt       DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt       DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  email                String
+  phone                String?
+  education            String?
+  experienceYears      Int?              @map("experience_years")
+  experience           String?
+  previousSchools      String?           @map("previous_schools")
+  references           String?
+  coverNote            String?           @map("cover_note")
+  // Detailed application (2026-10-12): personal, qualification, current job and preferences.
+  fatherName           String?           @map("father_name")
+  gender               Gender?
+  dateOfBirth          DateTime?         @map("date_of_birth") @db.Date
+  /// National identity card number (CNIC), e.g. 35202-1234567-1.
+  cnic                 String?
+  address              String?
+  city                 String?
+  /// Matric, Intermediate, Bachelor, Master, MPhil, PhD, Diploma, Other
+  highestQualification String?           @map("highest_qualification")
+  institution          String?
+  graduationYear       Int?              @map("graduation_year")
+  majorSubjects        String?           @map("major_subjects")
+  currentEmployer      String?           @map("current_employer")
+  currentDesignation   String?           @map("current_designation")
+  /// Subjects / classes the candidate can teach (teaching posts).
+  subjects             String?
+  expectedSalary       Decimal?          @map("expected_salary") @db.Decimal(12, 2)
+  noticePeriod         String?           @map("notice_period")
+  availableFrom        DateTime?         @map("available_from") @db.Date
+  languages            String?
+  skills               String?
+  linkedinUrl          String?           @map("linkedin_url")
+  status               ApplicationStatus @default(applied)
+  employeeId           String?           @unique @map("employee_id") @db.Uuid
+  createdAt            DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  school     School            @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  jobPost    JobPost           @relation(fields: [jobPostId, schoolId], references: [id, schoolId], onDelete: Cascade)
-  employee   Employee?         @relation(fields: [employeeId, schoolId], references: [id, schoolId], onDelete: Restrict)
+  school     School                     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  jobPost    JobPost                    @relation(fields: [jobPostId, schoolId], references: [id, schoolId], onDelete: Cascade)
+  employee   Employee?                  @relation(fields: [employeeId, schoolId], references: [id, schoolId], onDelete: Restrict)
   interviews InterviewRecord[]
+  history    ApplicationStatusHistory[]
 
   @@unique([jobPostId, email])
   @@unique([employeeId, schoolId])
   @@unique([id, schoolId])
   @@index([schoolId, status])
   @@map("job_applications")
+}
+
+/// Every stage change of a job application: who moved it, when, from what to what, and why. RLS-protected.
+model ApplicationStatusHistory {
+  id            String             @id @default(uuid(7)) @db.Uuid
+  schoolId      String             @map("school_id") @db.Uuid
+  applicationId String             @map("application_id") @db.Uuid
+  fromStatus    ApplicationStatus? @map("from_status")
+  toStatus      ApplicationStatus  @map("to_status")
+  note          String?
+  changedBy     String?            @map("changed_by") @db.Uuid
+  changedByName String?            @map("changed_by_name")
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school      School         @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  application JobApplication @relation(fields: [applicationId, schoolId], references: [id, schoolId], onDelete: Cascade)
+
+  @@index([applicationId, createdAt])
+  @@index([schoolId, createdAt(sort: Desc)])
+  @@map("application_status_history")
 }
 
 model InterviewRecord {
@@ -1191,6 +1264,7 @@ enum DocumentOwnerType {
   guardian
   admission_application
   school
+  job_application
 
   @@map("document_owner_type")
 }
@@ -1743,6 +1817,9 @@ model Invoice {
   discountTotal  Decimal       @default(0) @map("discount_total") @db.Decimal(12, 2)
   total          Decimal       @db.Decimal(12, 2)
   amountPaid     Decimal       @default(0) @map("amount_paid") @db.Decimal(12, 2)
+  /// Overdue reminders sent to the family (the job stops after 3, at least 6 days apart).
+  reminderCount  Int           @default(0) @map("reminder_count")
+  lastReminderAt DateTime?     @map("last_reminder_at") @db.Timestamptz(3)
   status         InvoiceStatus @default(pending)
   notes          String?
   createdBy      String?       @map("created_by") @db.Uuid
@@ -2365,10 +2442,16 @@ model ReportCard {
   remarks     String?
   generatedAt DateTime @map("generated_at") @db.Timestamptz(3)
 
-  school  School  @relation(fields: [schoolId], references: [id], onDelete: Cascade)
-  exam    Exam    @relation(fields: [examId, schoolId], references: [id, schoolId], onDelete: Cascade)
-  student Student @relation(fields: [studentId, schoolId], references: [id, schoolId], onDelete: Cascade)
-  section Section @relation(fields: [sectionId, schoolId], references: [id, schoolId], onDelete: Restrict)
+  /// Set by an administrator to force pass (true) or fail (false); null = from the marks.
+  passOverride Boolean?  @map("pass_override")
+  editedAt     DateTime? @map("edited_at") @db.Timestamptz(3)
+  editedByName String?   @map("edited_by_name")
+
+  school  School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  exam    Exam               @relation(fields: [examId, schoolId], references: [id, schoolId], onDelete: Cascade)
+  student Student            @relation(fields: [studentId, schoolId], references: [id, schoolId], onDelete: Cascade)
+  section Section            @relation(fields: [sectionId, schoolId], references: [id, schoolId], onDelete: Restrict)
+  changes ReportCardChange[]
 
   @@unique([examId, studentId])
   @@index([studentId])
@@ -2704,53 +2787,271 @@ model WebsiteMedia {
 
 /// Single row (id = 1): the account schools pay into, shown on their billing page.
 model PlatformBillingSettings {
-  id            Int      @id @default(1)
-  bankName      String?  @map("bank_name")
-  accountTitle  String?  @map("account_title")
-  accountNumber String?  @map("account_number")
-  iban          String?
-  instructions  String?
-  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                  Int      @id @default(1)
+  bankName            String?  @map("bank_name")
+  accountTitle        String?  @map("account_title")
+  accountNumber       String?  @map("account_number")
+  iban                String?
+  instructions        String?
+  /// Online card / bank / wallet payments are the default; manual bank transfer only when the owner allows it.
+  bankTransferEnabled Boolean  @default(false) @map("bank_transfer_enabled")
+  /// Yearly price (PKR) of the own-domain add-on; null = not offered.
+  domainPriceYearly   Decimal? @default(6000) @map("domain_price_yearly") @db.Decimal(12, 2)
+  updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@map("platform_billing_settings")
 }
 
 enum SubscriptionPaymentStatus {
+  /// Online checkout opened, waiting for the gateway.
+  initiated
+  /// Bank transfer submitted, waiting for the owner.
   pending
   confirmed
   rejected
+  /// The gateway declined or the checkout expired.
+  failed
 
   @@map("subscription_payment_status")
 }
 
 model SubscriptionPayment {
-  id              String                    @id @default(uuid(7)) @db.Uuid
-  schoolId        String                    @map("school_id") @db.Uuid
-  tierId          String                    @map("tier_id") @db.Uuid
-  billingCycle    BillingCycle              @map("billing_cycle")
-  amount          Decimal                   @db.Decimal(12, 2)
-  currency        String                    @db.Char(3)
-  payerName       String                    @map("payer_name")
-  payerBank       String                    @map("payer_bank")
-  payerAccount    String                    @map("payer_account")
-  reference       String
-  paidOn          DateTime                  @map("paid_on") @db.Date
-  note            String?
-  status          SubscriptionPaymentStatus @default(pending)
-  submittedBy     String                    @map("submitted_by") @db.Uuid
-  submittedByName String?                   @map("submitted_by_name")
-  reviewedBy      String?                   @map("reviewed_by") @db.Uuid
-  reviewedAt      DateTime?                 @map("reviewed_at") @db.Timestamptz(3)
-  reviewNote      String?                   @map("review_note")
-  periodStart     DateTime?                 @map("period_start") @db.Timestamptz(3)
-  periodEnd       DateTime?                 @map("period_end") @db.Timestamptz(3)
-  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt       DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                String                    @id @default(uuid(7)) @db.Uuid
+  schoolId          String                    @map("school_id") @db.Uuid
+  /// The plan paid for (null for an add-on such as the own domain).
+  tierId            String?                   @map("tier_id") @db.Uuid
+  /// "plan" or "domain" (own-domain add-on, one year).
+  purpose           String                    @default("plan")
+  billingCycle      BillingCycle              @map("billing_cycle")
+  amount            Decimal                   @db.Decimal(12, 2)
+  currency          String                    @db.Char(3)
+  /// bank_transfer (manual, confirmed by the owner) or online: card, bank_account, jazzcash, easypaisa
+  method            String                    @default("bank_transfer")
+  /// "manual" for bank transfers; the gateway for online payments ("sandbox", "payfast", "safepay" …)
+  provider          String                    @default("manual")
+  /// Online checkout: our opaque session id used in the gateway URL, valid until checkoutExpiresAt.
+  checkoutToken     String?                   @unique @map("checkout_token")
+  checkoutExpiresAt DateTime?                 @map("checkout_expires_at") @db.Timestamptz(3)
+  /// The gateway's transaction id (idempotency of webhooks).
+  providerTxnId     String?                   @map("provider_txn_id")
+  /// Card payments: brand and last 4 digits only (card details never reach this system).
+  cardBrand         String?                   @map("card_brand")
+  cardLast4         String?                   @map("card_last4")
+  paidAt            DateTime?                 @map("paid_at") @db.Timestamptz(3)
+  failureReason     String?                   @map("failure_reason")
+  payerName         String?                   @map("payer_name")
+  payerBank         String?                   @map("payer_bank")
+  payerAccount      String?                   @map("payer_account")
+  reference         String?
+  paidOn            DateTime?                 @map("paid_on") @db.Date
+  note              String?
+  status            SubscriptionPaymentStatus @default(pending)
+  submittedBy       String                    @map("submitted_by") @db.Uuid
+  submittedByName   String?                   @map("submitted_by_name")
+  reviewedBy        String?                   @map("reviewed_by") @db.Uuid
+  reviewedAt        DateTime?                 @map("reviewed_at") @db.Timestamptz(3)
+  reviewNote        String?                   @map("review_note")
+  periodStart       DateTime?                 @map("period_start") @db.Timestamptz(3)
+  periodEnd         DateTime?                 @map("period_end") @db.Timestamptz(3)
+  createdAt         DateTime                  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  school School           @relation(fields: [schoolId], references: [id], onDelete: Restrict)
-  tier   SubscriptionTier @relation(fields: [tierId], references: [id], onDelete: Restrict)
+  school School            @relation(fields: [schoolId], references: [id], onDelete: Restrict)
+  tier   SubscriptionTier? @relation(fields: [tierId], references: [id], onDelete: Restrict)
 
+  @@unique([provider, providerTxnId])
   @@index([status])
   @@index([schoolId])
   @@map("subscription_payments")
+}
+
+// --- Outbound delivery (2026-10-08): email / SMS / WhatsApp / push, sent by the background queue ----
+
+enum DeliveryChannel {
+  email
+  sms
+  whatsapp
+  push
+
+  @@map("delivery_channel")
+}
+
+enum DeliveryStatus {
+  queued
+  sent
+  failed
+
+  @@map("delivery_status")
+}
+
+/// Platform-level log of every outbound message. The body is never stored (it may hold a one-time code);
+/// only the template, recipient and outcome. No RLS: only the API's delivery worker and the platform console read it.
+model OutboundMessage {
+  id                String          @id @default(uuid(7)) @db.Uuid
+  schoolId          String?         @map("school_id") @db.Uuid
+  channel           DeliveryChannel
+  recipient         String
+  template          String
+  subject           String?
+  status            DeliveryStatus  @default(queued)
+  /// "smtp", "outbox" (development file drop), "twilio" …
+  provider          String?
+  providerMessageId String?         @map("provider_message_id")
+  attempts          Int             @default(0)
+  error             String?
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  sentAt            DateTime?       @map("sent_at") @db.Timestamptz(3)
+
+  school School? @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([schoolId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("outbound_messages")
+}
+
+// --- User IDs (2026-10-08) -------------------------------------------------------------------
+
+/// Registry of every User ID ever issued in a school, e.g. TCH-2026-0007 = prefix-year-seq.
+/// Rows are never updated or deleted (triggers), so an ID can never be changed or reused. RLS-protected.
+model LoginId {
+  id       String   @id @default(uuid(7)) @db.Uuid
+  schoolId String   @map("school_id") @db.Uuid
+  loginId  String   @map("login_id")
+  /// ADM, ACC, TCH, STF, PAR, STU
+  prefix   String
+  /// Joining / admission year.
+  year     Int
+  seq      Int
+  /// The login it belongs to (kept as null if that login is ever deleted).
+  userId   String?  @unique @map("user_id") @db.Uuid
+  issuedAt DateTime @default(now()) @map("issued_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@unique([schoolId, loginId])
+  @@unique([schoolId, prefix, year, seq])
+  @@map("login_ids")
+}
+
+// --- Role tables (2026-10-12): one table per kind of person ---------------------------------------
+// students and guardians (parents) are their own tables. Staff share `employees` (payroll, attendance,
+// leave and tasks link to it); `teachers` and `non_teaching_staff` hold one row per teacher / staff
+// member with their details, kept in step with `employees` by database triggers (never written by the app).
+
+/// Every teacher of the school. Maintained by triggers from employees (staff_type = teaching). RLS-protected.
+model Teacher {
+  employeeId  String   @id @map("employee_id") @db.Uuid
+  schoolId    String   @map("school_id") @db.Uuid
+  employeeNo  String   @map("employee_no")
+  firstName   String   @map("first_name")
+  lastName    String   @map("last_name")
+  email       String?
+  phone       String?
+  designation String
+  department  String?
+  status      String
+  joinDate    DateTime @map("join_date") @db.Date
+  userId      String?  @map("user_id") @db.Uuid
+  loginId     String?  @map("login_id")
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, status])
+  @@map("teachers")
+}
+
+/// Every non-teaching staff member. Maintained by triggers from employees (staff_type = non_teaching). RLS-protected.
+model NonTeachingStaff {
+  employeeId  String   @id @map("employee_id") @db.Uuid
+  schoolId    String   @map("school_id") @db.Uuid
+  employeeNo  String   @map("employee_no")
+  firstName   String   @map("first_name")
+  lastName    String   @map("last_name")
+  email       String?
+  phone       String?
+  designation String
+  department  String?
+  status      String
+  joinDate    DateTime @map("join_date") @db.Date
+  userId      String?  @map("user_id") @db.Uuid
+  loginId     String?  @map("login_id")
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  employee Employee @relation(fields: [employeeId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, status])
+  @@map("non_teaching_staff")
+}
+
+// --- Login history (2026-10-12) ---------------------------------------------------------------------
+
+/// Every sign-in attempt (school users and platform admins), for the owner's activity log and the school's
+/// own security view. Platform-level (no RLS) so the owner can see all schools; the API filters by school.
+model LoginEvent {
+  id              String   @id @default(uuid(7)) @db.Uuid
+  schoolId        String?  @map("school_id") @db.Uuid
+  userId          String?  @map("user_id") @db.Uuid
+  platformAdminId String?  @map("platform_admin_id") @db.Uuid
+  /// What was typed (email or User ID), lower-cased.
+  identifier      String
+  loginId         String?  @map("login_id")
+  name            String?
+  /// Roles at the time, e.g. "teacher,parent".
+  roles           String?
+  /// password, ticket (sign-up hand-over), support (owner session)
+  method          String   @default("password")
+  success         Boolean
+  reason          String?
+  ip              String?
+  userAgent       String?  @map("user_agent")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school School? @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([schoolId, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("login_events")
+}
+
+/// A browser / device that accepted web push notifications for a login. RLS-protected.
+model PushSubscription {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  schoolId   String    @map("school_id") @db.Uuid
+  userId     String    @map("user_id") @db.Uuid
+  endpoint   String    @unique
+  p256dh     String
+  auth       String
+  userAgent  String?   @map("user_agent")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId, schoolId], references: [id, schoolId], onDelete: Cascade)
+
+  @@index([schoolId, userId])
+  @@map("push_subscriptions")
+}
+
+/// Every correction an administrator makes to a report card: who, when, why, and before / after. RLS-protected.
+model ReportCardChange {
+  id            String   @id @default(uuid(7)) @db.Uuid
+  schoolId      String   @map("school_id") @db.Uuid
+  reportCardId  String   @map("report_card_id") @db.Uuid
+  changedBy     String   @map("changed_by") @db.Uuid
+  changedByName String?  @map("changed_by_name")
+  reason        String
+  /// { totalMarks, percentage, grade, passed, lines } before and after the change.
+  before        Json
+  after         Json
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school     School     @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  reportCard ReportCard @relation(fields: [reportCardId], references: [id], onDelete: Cascade)
+
+  @@index([reportCardId, createdAt])
+  @@map("report_card_changes")
 }

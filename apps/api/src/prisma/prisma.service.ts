@@ -22,7 +22,10 @@ export type TenantTx = Prisma.TransactionClient;
 export class PrismaService extends PrismaClient implements OnModuleDestroy {
   constructor(config: ConfigService<Env, true>) {
     super({
-      adapter: new PrismaPg({ connectionString: config.get('DATABASE_URL', { infer: true }) }),
+      // Sessions run in UTC: the adapter sends timestamps as UTC wall-clock text without an offset,
+      // so a server whose TimeZone is not UTC (e.g. a Windows install in Asia/Karachi) would store
+      // every time shifted by its offset, and database-side now()/cron comparisons would disagree.
+      adapter: new PrismaPg({ connectionString: config.get('DATABASE_URL', { infer: true }), options: '-c TimeZone=UTC' }),
     });
   }
 

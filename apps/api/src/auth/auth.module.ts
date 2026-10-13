@@ -8,7 +8,11 @@ import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
 import { AccessGuard, AuthGuard } from './guards.js';
 import { PasswordService } from './password.service.js';
+import { LoginEventsService } from './login-events.service.js';
+import { LoginTicketService } from './login-ticket.service.js';
+import { PasswordResetService } from './password-reset.service.js';
 import { RefreshTokenService } from './refresh-token.service.js';
+import { VerificationCodesService } from './verification-codes.service.js';
 
 @Module({
   imports: [
@@ -32,10 +36,14 @@ import { RefreshTokenService } from './refresh-token.service.js';
     AuthService,
     PasswordService,
     RefreshTokenService,
+    VerificationCodesService,
+    PasswordResetService,
+    LoginTicketService,
+    LoginEventsService,
     // Order matters: authenticate first, then authorize.
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: AccessGuard },
   ],
-  exports: [PasswordService, AuthService],
+  exports: [PasswordService, AuthService, VerificationCodesService, LoginTicketService, LoginEventsService],
 })
 export class AuthModule {}

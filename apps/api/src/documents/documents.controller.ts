@@ -25,7 +25,7 @@ import type { AuthContext } from '../common/request-context.js';
 import { DocumentsService, type OwnerType } from './documents.service.js';
 
 type SchoolAuth = Extract<AuthContext, { scope: 'school' }>;
-const OWNER_TYPES = ['student', 'employee', 'guardian', 'admission_application', 'school'] as const;
+const OWNER_TYPES = ['student', 'employee', 'guardian', 'admission_application', 'school', 'job_application'] as const;
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
 class OwnerQuery {

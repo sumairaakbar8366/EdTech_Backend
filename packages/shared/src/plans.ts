@@ -29,8 +29,8 @@ export function featuresForPlan(code: string | null | undefined): readonly PlanF
   return (code && PLAN_FEATURES[code]) || PLAN_FEATURES_LIST;
 }
 
-/** Days of full access after the trial or a paid period ends, before read-only mode. */
-export const GRACE_DAYS = 7;
+/** Days of full access after the trial or a paid period ends, before the school is locked (user decision 2026-10-08). */
+export const GRACE_DAYS = 3;
 
 export const FEATURE_INFO: Record<PlanFeature, { label: string; description: string; plan: string }> = {
   core: { label: 'Core school management', description: 'Students, staff, admissions, attendance, timetable, fees and communication.', plan: 'starter' },

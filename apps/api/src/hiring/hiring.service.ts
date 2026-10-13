@@ -1,6 +1,8 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import type { Prisma } from '../generated/prisma/client.js';
+import { AccountsService } from '../accounts/accounts.service.js';
 import { toDateOnly } from '../common/date-only.js';
-import { PrismaService, type SchoolScopedClient } from '../prisma/prisma.service.js';
+import { PrismaService, type SchoolScopedClient, type TenantTx } from '../prisma/prisma.service.js';
 import { StaffService } from '../staff/staff.service.js';
 import {
   APPLICATION_TRANSITIONS,
@@ -8,6 +10,7 @@ import {
   type CreateJobPostDto,
   type HireDto,
   type InterviewResultDto,
+  type ListApplicationsQuery,
   type MoveApplicationDto,
   type ScheduleInterviewDto,
   type UpdateJobPostDto,
@@ -21,6 +24,7 @@ export class HiringService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly staff: StaffService,
+    private readonly accounts: AccountsService,
   ) {}
 
   // --- Job posts --------------------------------------------------------------
@@ -89,7 +93,50 @@ export class HiringService {
     return { post, applications };
   }
 
-  async addApplication(schoolId: string, postId: string, dto: ApplicationDetailsDto, source: 'office' | 'website' = 'office') {
+  /** Every application (all posts, or one), newest first: the hiring log with its status column. */
+  async listAll(schoolId: string, q: ListApplicationsQuery) {
+    const db = this.prisma.forSchool(schoolId);
+    const term = q.q?.trim();
+    const where: Prisma.JobApplicationWhereInput = {
+      jobPostId: q.postId,
+      status: q.status,
+      ...(term && { OR: [{ firstName: { contains: term, mode: 'insensitive' } }, { lastName: { contains: term, mode: 'insensitive' } }, { email: { contains: term.toLowerCase() } }, { phone: { contains: term } }, { cnic: { contains: term } }] }),
+    };
+    const [items, total, byStatus] = await Promise.all([
+      db.jobApplication.findMany({
+        where,
+        orderBy: { updatedAt: 'desc' },
+        skip: (q.page - 1) * q.pageSize,
+        take: q.pageSize,
+        include: {
+          jobPost: { select: { id: true, title: true, staffType: true } },
+          history: { orderBy: { createdAt: 'desc' }, take: 1 },
+          interviews: { orderBy: { scheduledAt: 'desc' }, take: 1, select: { scheduledAt: true, score: true, recommendation: true } },
+        },
+      }),
+      db.jobApplication.count({ where }),
+      db.jobApplication.groupBy({ by: ['status'], where: { ...where, status: undefined }, _count: { _all: true } }),
+    ]);
+    return { items, total, page: q.page, pageSize: q.pageSize, byStatus: Object.fromEntries(byStatus.map((b) => [b.status, b._count._all])) };
+  }
+
+  /** The full applicant profile: every detail, the post, interviews, the status log and documents. */
+  async getApplication(schoolId: string, id: string) {
+    const db = this.prisma.forSchool(schoolId);
+    const app = await db.jobApplication.findUnique({
+      where: { id },
+      include: {
+        jobPost: { include: { campus: { select: { id: true, name: true, code: true } } } },
+        interviews: { orderBy: { scheduledAt: 'desc' } },
+        history: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+    if (!app) throw new NotFoundException('Application not found');
+    const hiredCount = await db.jobApplication.count({ where: { jobPostId: app.jobPostId, status: 'hired' } });
+    return { ...app, hiredCount };
+  }
+
+  async addApplication(schoolId: string, postId: string, dto: ApplicationDetailsDto, source: 'office' | 'website' = 'office', actorUserId?: string) {
     const db = this.prisma.forSchool(schoolId);
     const post = await db.jobPost.findUnique({ where: { id: postId } });
     if (!post) throw new NotFoundException('Job post not found');
@@ -100,7 +147,11 @@ export class HiringService {
     if (await db.jobApplication.findFirst({ where: { jobPostId: postId, email: dto.email, status: { notIn: ['rejected', 'withdrawn'] } }, select: { id: true } })) {
       throw new ConflictException(`${dto.email} has already applied for this post`);
     }
-    return db.jobApplication.create({ data: { schoolId, jobPostId: postId, ...dto, source } });
+    return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+      const app = await tx.jobApplication.create({ data: { schoolId, jobPostId: postId, ...details(dto), source } });
+      await logStatus(tx, schoolId, app.id, null, 'applied', source === 'website' ? 'Applied on the school website' : 'Added by the office', actorUserId);
+      return app;
+    });
   }
 
   async updateApplication(schoolId: string, id: string, dto: ApplicationDetailsDto) {
@@ -108,29 +159,35 @@ export class HiringService {
     const app = await db.jobApplication.findUnique({ where: { id }, select: { status: true } });
     if (!app) throw new NotFoundException('Application not found');
     if (app.status === 'hired') throw new BadRequestException('A hired application can no longer be edited; update the staff record instead');
-    return db.jobApplication.update({ where: { id }, data: dto });
+    return db.jobApplication.update({ where: { id }, data: details(dto) });
   }
 
-  async move(schoolId: string, id: string, dto: MoveApplicationDto) {
-    const db = this.prisma.forSchool(schoolId);
-    const app = await db.jobApplication.findUnique({ where: { id }, select: { status: true } });
-    if (!app) throw new NotFoundException('Application not found');
-    if (!APPLICATION_TRANSITIONS[app.status].includes(dto.status)) {
-      throw new BadRequestException(`An application that is "${app.status}" cannot move to "${dto.status}"`);
-    }
-    return db.jobApplication.update({ where: { id }, data: { status: dto.status } });
+  move(schoolId: string, id: string, dto: MoveApplicationDto, actorUserId: string) {
+    return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+      const app = await tx.jobApplication.findUnique({ where: { id }, select: { status: true } });
+      if (!app) throw new NotFoundException('Application not found');
+      if (!APPLICATION_TRANSITIONS[app.status].includes(dto.status)) {
+        throw new BadRequestException(`An application that is "${app.status}" cannot move to "${dto.status}"`);
+      }
+      const updated = await tx.jobApplication.update({ where: { id }, data: { status: dto.status } });
+      await logStatus(tx, schoolId, id, app.status, dto.status, dto.note ?? null, actorUserId);
+      return updated;
+    });
   }
 
   // --- Interviews ---------------------------------------------------------------
 
-  scheduleInterview(schoolId: string, applicationId: string, dto: ScheduleInterviewDto) {
+  scheduleInterview(schoolId: string, applicationId: string, dto: ScheduleInterviewDto, actorUserId?: string) {
     return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const app = await tx.jobApplication.findUnique({ where: { id: applicationId }, select: { status: true } });
       if (!app) throw new NotFoundException('Application not found');
       if (app.status !== 'shortlisted' && app.status !== 'interview') {
         throw new BadRequestException('Shortlist the candidate before scheduling an interview');
       }
-      if (app.status === 'shortlisted') await tx.jobApplication.update({ where: { id: applicationId }, data: { status: 'interview' } });
+      if (app.status === 'shortlisted') {
+        await tx.jobApplication.update({ where: { id: applicationId }, data: { status: 'interview' } });
+        await logStatus(tx, schoolId, applicationId, 'shortlisted', 'interview', `Interview scheduled (${dto.mode ?? 'in_person'}) with ${dto.interviewer}`, actorUserId);
+      }
       return tx.interviewRecord.create({
         data: { schoolId, applicationId, scheduledAt: new Date(dto.scheduledAt), mode: dto.mode ?? 'in_person', interviewer: dto.interviewer },
       });
@@ -142,13 +199,14 @@ export class HiringService {
    * at the "Interview" stage to "Selected", so the board reflects the decision; hiring stays a
    * separate, deliberate step. Negative results are left for the panel to reject explicitly.
    */
-  recordInterview(schoolId: string, interviewId: string, dto: InterviewResultDto) {
+  recordInterview(schoolId: string, interviewId: string, dto: InterviewResultDto, actorUserId?: string) {
     return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const interview = await tx.interviewRecord.findUnique({ where: { id: interviewId }, select: { id: true, applicationId: true } });
       if (!interview) throw new NotFoundException('Interview not found');
       const updated = await tx.interviewRecord.update({ where: { id: interviewId }, data: dto });
       if (dto.recommendation === 'yes' || dto.recommendation === 'strong_yes') {
-        await tx.jobApplication.updateMany({ where: { id: interview.applicationId, status: 'interview' }, data: { status: 'selected' } });
+        const moved = await tx.jobApplication.updateMany({ where: { id: interview.applicationId, status: 'interview' }, data: { status: 'selected' } });
+        if (moved.count) await logStatus(tx, schoolId, interview.applicationId, 'interview', 'selected', `Interview result: ${dto.recommendation === 'strong_yes' ? 'strong yes' : 'yes'}${dto.score ? ` (${dto.score}/10)` : ''}`, actorUserId);
       }
       return updated;
     });
@@ -192,7 +250,11 @@ export class HiringService {
         `Hired through "${app.jobPost.title}"`,
       );
       await tx.jobApplication.update({ where: { id: applicationId }, data: { status: 'hired', employeeId: employee.id } });
-      return { employeeId: employee.id, employeeNo: employee.employeeNo, credentials: employee.credentials };
+      await logStatus(tx, schoolId, applicationId, 'selected', 'hired', `Joined as ${employee.employeeNo} on ${dto.joinDate}`, actorUserId);
+      return { employeeId: employee.id, employeeNo: employee.employeeNo, credentials: employee.credentials, login: employee.login };
+    }).then(async ({ login, ...rest }) => {
+      await this.accounts.announce(schoolId, [login]);
+      return rest;
     });
   }
 
@@ -206,6 +268,24 @@ export class HiringService {
     ]);
     return { openPosts, inPipeline, interviewsUpcoming };
   }
+}
+
+/** Turns the date and money fields of an application into their database types. */
+function details(dto: ApplicationDetailsDto) {
+  return {
+    ...dto,
+    dateOfBirth: dto.dateOfBirth === undefined ? undefined : dto.dateOfBirth ? toDateOnly(dto.dateOfBirth) : null,
+    availableFrom: dto.availableFrom === undefined ? undefined : dto.availableFrom ? toDateOnly(dto.availableFrom) : null,
+    cnic: dto.cnic ? dto.cnic.replace(/^(\d{5})-?(\d{7})-?(\d)$/, '$1-$2-$3') : dto.cnic,
+  };
+}
+
+/** One row in the application's status log, with who did it. */
+async function logStatus(tx: TenantTx, schoolId: string, applicationId: string, from: Prisma.ApplicationStatusHistoryCreateInput['fromStatus'], to: Prisma.ApplicationStatusHistoryCreateInput['toStatus'], note: string | null, actorUserId?: string) {
+  const actor = actorUserId ? await tx.user.findUnique({ where: { id: actorUserId }, select: { firstName: true, lastName: true } }) : null;
+  await tx.applicationStatusHistory.create({
+    data: { schoolId, applicationId, fromStatus: from ?? null, toStatus: to, note, changedBy: actorUserId ?? null, changedByName: actor ? `${actor.firstName} ${actor.lastName}` : actorUserId ? null : 'Website' },
+  });
 }
 
 function todayUtc(): Date {

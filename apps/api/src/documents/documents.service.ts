@@ -9,7 +9,7 @@ import { PermissionService } from '../rbac/permission.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { detectAllowedType, safeFileName } from './file-type.js';
 
-export type OwnerType = 'student' | 'employee' | 'guardian' | 'admission_application' | 'school';
+export type OwnerType = 'student' | 'employee' | 'guardian' | 'admission_application' | 'school' | 'job_application';
 type SchoolAuth = Extract<AuthContext, { scope: 'school' }>;
 
 export interface UploadInput {
@@ -107,6 +107,13 @@ export class DocumentsService {
       const app = await db.admissionApplication.findUnique({ where: { id: ownerId }, select: { id: true } });
       if (!app) throw new NotFoundException('Application not found');
       if (hasAccess(perms, 'admissions', mode === 'write' ? ['crud'] : ['crud', 'view'])) return;
+      throw new ForbiddenException();
+    }
+
+    if (ownerType === 'job_application') {
+      const app = await db.jobApplication.findUnique({ where: { id: ownerId }, select: { id: true } });
+      if (!app) throw new NotFoundException('Application not found');
+      if (hasAccess(perms, 'staff', mode === 'write' ? ['crud'] : ['crud', 'view'])) return;
       throw new ForbiddenException();
     }
 

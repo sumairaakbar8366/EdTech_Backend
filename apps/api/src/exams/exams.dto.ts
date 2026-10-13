@@ -1,5 +1,5 @@
 import { Transform, Type } from 'class-transformer';
-import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
+import { ArrayMaxSize, ArrayMinSize, IsArray, IsBoolean, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, MinLength, ValidateNested } from 'class-validator';
 import { IsDateOnly } from '../common/date-only.js';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
@@ -69,4 +69,28 @@ export class StudentQuery {
 
 export class RemarksDto {
   @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(500) remarks?: string | null;
+}
+
+export class CorrectionLineDto {
+  @IsString() @MaxLength(150) subject: string;
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(10_000) marks: number | null;
+  @IsBoolean() isAbsent: boolean;
+}
+
+/** An administrator's correction of a report card (any exam, published or not). */
+export class CorrectResultDto {
+  @IsOptional() @IsArray() @ArrayMaxSize(40) @ValidateNested({ each: true }) @Type(() => CorrectionLineDto) lines?: CorrectionLineDto[];
+  /** true = pass, false = fail, null = from the marks. Leave out to keep it as it is. */
+  @IsOptional() @IsBoolean() passOverride?: boolean | null;
+  @IsOptional() @IsString() @MaxLength(1000) remarks?: string | null;
+  @IsString() @MinLength(3) @MaxLength(1000) reason: string;
+}
+
+export class ResultSearchQuery {
+  @IsOptional() @IsString() @MaxLength(100) q?: string;
+  @IsOptional() @IsUUID() examId?: string;
+  @IsOptional() @IsUUID() classId?: string;
+  @IsOptional() @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value)) @IsBoolean() passed?: boolean;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize = 25;
 }

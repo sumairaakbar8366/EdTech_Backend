@@ -9,33 +9,37 @@ import { SubscriptionStateService, type SubscriptionState } from './subscription
 const DAY = 86_400_000;
 const SCHOOL = '0192f0a0-0000-7000-8000-00000000000a';
 
-function serviceWith(sub: Record<string, unknown> | null) {
-  const prisma = { subscription: { findFirst: async () => sub } } as unknown as PrismaService;
+function serviceWith(sub: Record<string, unknown> | null, domainUntil: Date | null = null) {
+  const prisma = {
+    subscription: { findFirst: async () => sub },
+    forSchool: () => ({ schoolSettings: { findUnique: async () => ({ customDomainUntil: domainUntil }) } }),
+  } as unknown as PrismaService;
   return new SubscriptionStateService(prisma);
 }
 const trial = (endsInDays: number) => ({ status: 'trialing', trialEndsAt: new Date(Date.now() + endsInDays * DAY), currentPeriodEnd: null, billingCycle: 'monthly', tier: { code: 'growth', name: 'Growth', entitlements: [] } });
 const paid = (code: string, endsInDays: number) => ({ status: 'active', trialEndsAt: null, currentPeriodEnd: new Date(Date.now() + endsInDays * DAY), billingCycle: 'monthly', tier: { code, name: code, entitlements: [] as { featureKey: string; isEnabled: boolean }[] } });
 
 describe('SubscriptionStateService', () => {
-  it('trial: every feature, not read-only', async () => {
+  it('trial: every feature except the own domain, not locked', async () => {
     const s = await serviceWith(trial(10)).get(SCHOOL);
     expect(s.phase).toBe('trial');
-    expect(s.readOnly).toBe(false);
+    expect(s.locked).toBe(false);
     expect(s.features).toContain('theme');
+    expect(s.features).not.toContain('custom_domain');
     expect(s.daysLeft).toBe(10);
   });
 
-  it('trial ended 3 days ago: grace with full access, 4 days left', async () => {
-    const s = await serviceWith(trial(-3)).get(SCHOOL);
+  it('trial ended 1 day ago: grace with full access, 2 days left', async () => {
+    const s = await serviceWith(trial(-1)).get(SCHOOL);
     expect(s.phase).toBe('grace');
-    expect(s.readOnly).toBe(false);
-    expect(s.daysLeft).toBe(4);
+    expect(s.locked).toBe(false);
+    expect(s.daysLeft).toBe(2);
   });
 
-  it('trial ended 8 days ago: read-only, data still visible (features kept)', async () => {
-    const s = await serviceWith(trial(-8)).get(SCHOOL);
+  it('trial ended 4 days ago: locked (features kept for when they pay)', async () => {
+    const s = await serviceWith(trial(-4)).get(SCHOOL);
     expect(s.phase).toBe('expired');
-    expect(s.readOnly).toBe(true);
+    expect(s.locked).toBe(true);
     expect(s.features).toContain('exams');
   });
 
@@ -52,14 +56,19 @@ describe('SubscriptionStateService', () => {
     expect(s.tier).toEqual({ code: 'starter', name: 'Starter' });
   });
 
-  it('no subscription at all: read-only', async () => {
+  it('own-domain add-on adds the feature to any paid plan while it is paid', async () => {
+    expect((await serviceWith(paid('starter', 20), new Date(Date.now() + 100 * DAY)).get(SCHOOL)).features).toContain('custom_domain');
+    expect((await serviceWith(paid('starter', 20), new Date(Date.now() - DAY)).get(SCHOOL)).features).not.toContain('custom_domain');
+  });
+
+  it('no subscription at all: locked', async () => {
     const s = await serviceWith(null).get(SCHOOL);
-    expect(s.readOnly).toBe(true);
+    expect(s.locked).toBe(true);
   });
 });
 
 function guardFor(state: Partial<SubscriptionState>) {
-  const full: SubscriptionState = { phase: 'active', readOnly: false, tier: null, status: 'active', billingCycle: 'monthly', endsAt: null, graceEndsAt: null, daysLeft: 10, features: ['core', 'website'], ...state };
+  const full: SubscriptionState = { phase: 'active', locked: false, tier: null, status: 'active', billingCycle: 'monthly', endsAt: null, graceEndsAt: null, daysLeft: 10, features: ['core', 'website'], ...state };
   return new EntitlementGuard({ get: async () => full } as unknown as SubscriptionStateService);
 }
 function ctx(method: string, url: string, body: unknown = {}) {
@@ -80,12 +89,15 @@ describe('EntitlementGuard', () => {
     expect(await status(guardFor({}).canActivate(ctx('GET', '/students')))).toBe(200);
   });
 
-  it('read-only mode: reads allowed, writes refused, daily basics allowed', async () => {
-    const g = guardFor({ phase: 'expired', readOnly: true, features: ['core', 'website', 'exams'] });
-    expect(await status(g.canActivate(ctx('GET', '/students')))).toBe(200);
+  it('locked: everything refused except signing in, plan state and paying', async () => {
+    const g = guardFor({ phase: 'expired', locked: true, features: ['core', 'website', 'exams'] });
+    expect(await status(g.canActivate(ctx('GET', '/students')))).toBe(402);
     expect(await status(g.canActivate(ctx('POST', '/students')))).toBe(402);
-    expect(await status(g.canActivate(ctx('POST', '/attendance/sessions/abc')))).toBe(200);
-    expect(await status(g.canActivate(ctx('POST', '/billing/payments')))).toBe(200);
+    expect(await status(g.canActivate(ctx('POST', '/attendance/sessions/abc')))).toBe(402);
+    expect(await status(g.canActivate(ctx('GET', '/notifications/unread-count')))).toBe(402);
+    expect(await status(g.canActivate(ctx('GET', '/subscription')))).toBe(200);
+    expect(await status(g.canActivate(ctx('GET', '/billing')))).toBe(200);
+    expect(await status(g.canActivate(ctx('POST', '/billing/checkout')))).toBe(200);
     expect(await status(g.canActivate(ctx('POST', '/auth/change-password')))).toBe(200);
   });
 

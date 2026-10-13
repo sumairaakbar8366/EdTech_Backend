@@ -27,7 +27,7 @@ export class SchoolsController {
     return this.prisma.inSchoolTransaction(id, (tx) =>
       tx.user.findMany({
         where: { userRoles: { some: { role: { key: 'school_admin' } } } },
-        select: { id: true, firstName: true, lastName: true, email: true, status: true, lastLoginAt: true },
+        select: { id: true, loginId: true, firstName: true, lastName: true, email: true, emailVerifiedAt: true, status: true, lastLoginAt: true },
         orderBy: { createdAt: 'asc' },
       }),
     );
@@ -43,7 +43,7 @@ export class SchoolsController {
     res.setHeader('Cache-Control', 'no-store');
     const password = temporaryPassword();
     const user = await this.prisma.inSchoolTransaction(id, async (tx) => {
-      const u = await tx.user.findFirst({ where: { id: userId, userRoles: { some: { role: { key: 'school_admin' } } } }, select: { id: true, email: true, firstName: true, lastName: true, status: true } });
+      const u = await tx.user.findFirst({ where: { id: userId, userRoles: { some: { role: { key: 'school_admin' } } } }, select: { id: true, loginId: true, email: true, firstName: true, lastName: true, status: true } });
       if (!u) throw new NotFoundException('School admin not found');
       if (u.status !== 'active') throw new BadRequestException('This login is disabled');
       await tx.user.update({ where: { id: u.id }, data: { passwordHash: await this.passwords.hash(password), mustChangePassword: true } });

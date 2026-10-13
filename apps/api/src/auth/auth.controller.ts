@@ -18,7 +18,7 @@ import type { Env } from '../config/env.js';
 import type { AppRequest, AuthContext } from '../common/request-context.js';
 import { AuthService, type IssuedTokens } from './auth.service.js';
 import { AllowPendingPassword, CurrentAuth, Public } from './decorators.js';
-import { ChangePasswordDto, LoginDto } from './login.dto.js';
+import { ChangePasswordDto, ForgotPasswordDto, ForgotUserIdDto, LoginDto, ResetPasswordDto, ResetTokenDto, SendEmailCodeDto, TicketDto, VerifyEmailCodeDto } from './login.dto.js';
 
 const REFRESH_COOKIE = 'schoolerp_rt';
 const REFRESH_COOKIE_PATH = '/api/auth';
@@ -45,8 +45,19 @@ export class AuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   async login(@Req() req: AppRequest, @Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
-    const tokens = await this.auth.login(req.tenant!, dto.email, dto.password);
+    const tokens = await this.auth.login(req.tenant!, dto.identifier, dto.password, loginContext(req));
     return this.respond(res, tokens, dto.remember === true);
+  }
+
+  /** One-time ticket from sign-up (or a support hand-over) → a session on this school's host. */
+  @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('ticket')
+  @HttpCode(HttpStatus.OK)
+  async ticket(@Req() req: AppRequest, @Body() dto: TicketDto, @Res({ passthrough: true }) res: Response) {
+    assertCsrfHeader(req);
+    return this.respond(res, await this.auth.exchangeTicket(req.tenant!, dto.ticket, loginContext(req)), false);
   }
 
   @Public()
@@ -89,6 +100,65 @@ export class AuthController {
     return this.respond(res, tokens, req.cookies?.[REMEMBER_COOKIE] === '1');
   }
 
+  /** Emails a reset link (school: by User ID; platform: by email). Same answer whether or not it exists. */
+  @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async forgotPassword(@Req() req: AppRequest, @Body() dto: ForgotPasswordDto) {
+    await this.auth.forgotPassword(req.tenant!, dto.identifier);
+    return { message: 'If that account exists and has a verified email, a reset link is on its way.' };
+  }
+
+  @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post('reset-password/check')
+  @HttpCode(HttpStatus.OK)
+  checkReset(@Body() dto: ResetTokenDto) {
+    return this.auth.checkResetToken(dto.token);
+  }
+
+  @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('reset-password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async resetPassword(@Req() req: AppRequest, @Body() dto: ResetPasswordDto): Promise<void> {
+    await this.auth.resetPassword(req.tenant!, dto.token, dto.newPassword);
+  }
+
+  /** Emails the User IDs registered with a verified email at this school. */
+  @Public()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('forgot-user-id')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async forgotUserId(@Req() req: AppRequest, @Body() dto: ForgotUserIdDto) {
+    await this.auth.forgotUserId(req.tenant!, dto.email);
+    return { message: 'If accounts use that email, their User IDs are on their way.' };
+  }
+
+  /** Sends a 6-digit code to verify the signed-in user's email (or a new one). */
+  @AllowPendingPassword()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @Post('email/code')
+  @HttpCode(HttpStatus.OK)
+  sendEmailCode(@Req() req: AppRequest, @CurrentAuth() auth: AuthContext, @Body() dto: SendEmailCodeDto) {
+    return this.auth.sendEmailCode(auth, req.tenant!, dto.email);
+  }
+
+  @AllowPendingPassword()
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 15, ttl: 60_000 } })
+  @Post('email/verify')
+  @HttpCode(HttpStatus.OK)
+  verifyEmail(@CurrentAuth() auth: AuthContext, @Body() dto: VerifyEmailCodeDto) {
+    return this.auth.verifyEmailCode(auth, dto.verificationId, dto.code);
+  }
+
   @AllowPendingPassword()
   @Get('me')
   me(@Req() req: AppRequest, @CurrentAuth() auth: AuthContext) {
@@ -100,6 +170,11 @@ export class AuthController {
    * closes and the next visit starts at the login page. A small flag cookie remembers the choice.
    */
   private respond(res: Response, tokens: IssuedTokens, remember: boolean) {
+    // Owner support sessions carry no refresh token: they end with the access token (1 hour).
+    if (!tokens.refreshToken) {
+      res.setHeader('Cache-Control', 'no-store');
+      return { accessToken: tokens.accessToken, tokenType: 'Bearer', expiresIn: tokens.expiresIn };
+    }
     const base = { httpOnly: true, secure: this.secureCookies, sameSite: 'strict' as const, path: REFRESH_COOKIE_PATH };
     const lifetime = remember ? { maxAge: this.auth.refreshMaxAgeSeconds * 1000 } : {};
     res.cookie(REFRESH_COOKIE, tokens.refreshToken, { ...base, ...lifetime });
@@ -113,6 +188,12 @@ export class AuthController {
     res.clearCookie(REFRESH_COOKIE, base);
     res.clearCookie(REMEMBER_COOKIE, base);
   }
+}
+
+/** Who is signing in from where, for the login history (the client IP honours TRUST_PROXY). */
+function loginContext(req: AppRequest) {
+  const ua = req.headers['user-agent'];
+  return { ip: req.ip ?? null, userAgent: typeof ua === 'string' ? ua : null };
 }
 
 /** Whether the session was started with "remember me". */

@@ -27,3 +27,7 @@ export class DomainDto {
   @IsString() @MaxLength(253)
   hostname!: string;
 }
+
+export class NotificationChannelsDto {
+  @IsIn(['off', 'sms', 'whatsapp']) mobileChannel: 'off' | 'sms' | 'whatsapp';
+}

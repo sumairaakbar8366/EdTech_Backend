@@ -9,8 +9,8 @@ const TIER = { tier: { select: { code: true, name: true, entitlements: { select:
 
 export interface SubscriptionState {
   phase: SubscriptionPhase;
-  /** No changes allowed (except daily basics and paying) until the school pays. */
-  readOnly: boolean;
+  /** Grace is over: the school is locked (sign-in, plan state and paying only) until it pays. */
+  locked: boolean;
   tier: { code: string; name: string } | null;
   status: string | null;
   billingCycle: string | null;
@@ -25,7 +25,7 @@ export interface SubscriptionState {
 
 /**
  * The school's subscription as the product sees it: trial → (paid) active → grace (GRACE_DAYS of
- * full access after the end date) → expired (read-only). Cached briefly per school.
+ * full access after the end date) → expired (locked until payment). Cached briefly per school.
  */
 @Injectable()
 export class SubscriptionStateService {
@@ -46,29 +46,37 @@ export class SubscriptionStateService {
     return state;
   }
 
+  private async domainAddonActive(schoolId: string): Promise<boolean> {
+    const s = await this.prisma.forSchool(schoolId).schoolSettings.findUnique({ where: { schoolId }, select: { customDomainUntil: true } }).catch(() => null);
+    return !!s?.customDomainUntil && s.customDomainUntil > new Date();
+  }
+
   private async compute(schoolId: string): Promise<SubscriptionState> {
     const sub =
       (await this.prisma.subscription.findFirst({ where: { schoolId, status: { in: ['trialing', 'active', 'past_due'] } }, orderBy: { createdAt: 'desc' }, include: TIER })) ??
       (await this.prisma.subscription.findFirst({ where: { schoolId }, orderBy: { createdAt: 'desc' }, include: TIER }));
     const now = Date.now();
-    if (!sub) return { phase: 'expired', readOnly: true, tier: null, status: null, billingCycle: null, endsAt: null, graceEndsAt: null, daysLeft: null, features: [...PLAN_FEATURES_LIST] };
+    if (!sub) return { phase: 'expired', locked: true, tier: null, status: null, billingCycle: null, endsAt: null, graceEndsAt: null, daysLeft: null, features: [...PLAN_FEATURES_LIST] };
 
     const trialing = sub.status === 'trialing';
     const end = trialing ? sub.trialEndsAt : sub.currentPeriodEnd;
-    // The trial includes every feature; a paid plan includes the set the platform owner gave it.
-    const features = trialing ? [...PLAN_FEATURES_LIST] : tierFeatures(sub.tier);
+    // The trial includes every feature; a paid plan includes the set the platform owner gave it,
+    // plus any add-on bought separately (the own domain, paid yearly).
+    // A free trial has every feature except the own domain, which is only for schools that pay.
+    const features = trialing ? PLAN_FEATURES_LIST.filter((f) => f !== 'custom_domain') : tierFeatures(sub.tier);
+    if (!features.includes('custom_domain') && (await this.domainAddonActive(schoolId))) features.push('custom_domain');
     const base = { tier: { code: sub.tier.code, name: sub.tier.name }, status: sub.status, billingCycle: sub.status === 'trialing' ? null : sub.billingCycle, features };
     if (sub.status === 'canceled' || sub.status === 'expired') {
-      return { ...base, phase: 'expired', readOnly: true, endsAt: end?.toISOString() ?? null, graceEndsAt: null, daysLeft: 0 };
+      return { ...base, phase: 'expired', locked: true, endsAt: end?.toISOString() ?? null, graceEndsAt: null, daysLeft: 0 };
     }
-    if (!end) return { ...base, phase: trialing ? 'trial' : 'active', readOnly: false, endsAt: null, graceEndsAt: null, daysLeft: null };
+    if (!end) return { ...base, phase: trialing ? 'trial' : 'active', locked: false, endsAt: null, graceEndsAt: null, daysLeft: null };
     const graceEnd = end.getTime() + GRACE_DAYS * DAY;
     if (now < end.getTime() && sub.status !== 'past_due') {
-      return { ...base, phase: trialing ? 'trial' : 'active', readOnly: false, endsAt: end.toISOString(), graceEndsAt: new Date(graceEnd).toISOString(), daysLeft: Math.ceil((end.getTime() - now) / DAY) };
+      return { ...base, phase: trialing ? 'trial' : 'active', locked: false, endsAt: end.toISOString(), graceEndsAt: new Date(graceEnd).toISOString(), daysLeft: Math.ceil((end.getTime() - now) / DAY) };
     }
     if (now < graceEnd) {
-      return { ...base, phase: 'grace', readOnly: false, endsAt: end.toISOString(), graceEndsAt: new Date(graceEnd).toISOString(), daysLeft: Math.ceil((graceEnd - now) / DAY) };
+      return { ...base, phase: 'grace', locked: false, endsAt: end.toISOString(), graceEndsAt: new Date(graceEnd).toISOString(), daysLeft: Math.ceil((graceEnd - now) / DAY) };
     }
-    return { ...base, phase: 'expired', readOnly: true, endsAt: end.toISOString(), graceEndsAt: new Date(graceEnd).toISOString(), daysLeft: 0 };
+    return { ...base, phase: 'expired', locked: true, endsAt: end.toISOString(), graceEndsAt: new Date(graceEnd).toISOString(), daysLeft: 0 };
   }
 }

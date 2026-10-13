@@ -60,8 +60,9 @@ export class PreviousSchoolDto {
   @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(500) reason?: string | null;
 }
 
+/** A parent login: the password is generated (shown once); a typed one is accepted for imports. */
 export class LoginPasswordDto {
-  @IsString() @MinLength(12) @MaxLength(256) password: string;
+  @IsOptional() @IsString() @MinLength(12) @MaxLength(256) password?: string;
 }
 
 export class GuardianDetailsDto {
@@ -91,9 +92,10 @@ export class EnrollDto {
   @IsOptional() @IsInt() @Min(1) @Max(9999) rollNo?: number | null;
 }
 
+/** A student login: sign-in is by User ID; the email (the student's or a parent's) is optional. */
 export class StudentLoginDto {
-  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value)) @IsEmail() @MaxLength(254) email: string;
-  @IsString() @MinLength(12) @MaxLength(256) password: string;
+  @IsOptional() @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() || undefined : value)) @IsEmail() @MaxLength(254) email?: string;
+  @IsOptional() @IsString() @MinLength(12) @MaxLength(256) password?: string;
 }
 
 export class CreateStudentDto {

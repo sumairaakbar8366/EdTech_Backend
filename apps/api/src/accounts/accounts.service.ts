@@ -1,14 +1,21 @@
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
 import type { SchoolRoleKey } from '@schoolerp/shared';
 import { randomInt } from 'node:crypto';
 import { PasswordService } from '../auth/password.service.js';
-import type { TenantTx } from '../prisma/prisma.service.js';
+import { DeliveryService } from '../delivery/delivery.service.js';
+import { WebUrls } from '../delivery/web-urls.service.js';
+import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
 
 export interface NewAccount {
-  email: string;
   firstName: string;
   lastName: string;
   phone?: string | null;
+  /** The person's own email (contact, OTP, password reset). Optional: young students may have none. */
+  email?: string | null;
+  /** True when the address was just confirmed with an emailed code. */
+  emailVerified?: boolean;
+  /** Joining / admission year for the User ID. Defaults to the current year. */
+  year?: number;
 }
 
 /** No 0/O, 1/l/I: the password is read out or typed from a printout. */
@@ -20,93 +27,129 @@ export function temporaryPassword(): string {
   return `${group()}-${group()}-${group()}`;
 }
 
-/** The part of a generated login email that says what the account is for. */
-const ROLE_SUFFIX: Record<SchoolRoleKey, string> = {
-  school_admin: 'admin',
-  accounts: 'accounts',
-  teacher: 'teacher',
-  non_teaching_staff: 'staff',
-  parent: 'parent',
-  student: 'student',
+/** User ID prefix by the account's main role. */
+export const LOGIN_PREFIX: Record<SchoolRoleKey, string> = {
+  school_admin: 'ADM',
+  accounts: 'ACC',
+  teacher: 'TCH',
+  non_teaching_staff: 'STF',
+  parent: 'PAR',
+  student: 'STU',
 };
+const PRIORITY: readonly SchoolRoleKey[] = ['school_admin', 'accounts', 'teacher', 'non_teaching_staff', 'parent', 'student'];
 
-/** "Tehmina Aslam" → "tehmina.aslam" (accents dropped, anything else removed). */
-function emailName(firstName: string, lastName: string): string {
-  const part = (s: string) =>
-    s
-      .normalize('NFKD')
-      .replace(/[̀-ͯ]/g, '')
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '');
-  return [part(firstName), part(lastName)].filter(Boolean).join('.') || 'user';
-}
+/** "TCH", 2026, 7 → "TCH-2026-0007" (the database checks the same format). */
+export const formatLoginId = (prefix: string, year: number, seq: number) => `${prefix}-${year}-${String(seq).padStart(4, '0')}`;
+
+/** Normalises what people type: " tch-2026-0007 " → "TCH-2026-0007". */
+export const normaliseLoginId = (value: string) => value.trim().toUpperCase().replace(/\s+/g, '');
 
 export interface GeneratedLogin {
   userId: string;
-  email: string;
+  loginId: string;
+  /** Temporary password: shown once to the administrator, replaced by the person at first sign-in. */
   password: string;
+  name: string;
+  /** The main role (decides the User ID prefix). */
+  role: SchoolRoleKey;
+  email: string | null;
+  emailVerified: boolean;
 }
 
-/** Creates school logins (users + system roles) for staff, parents and students. */
+/** What the administrator sees once after creating a login. */
+export const handover = (l: GeneratedLogin) => ({ name: l.name, role: l.role, loginId: l.loginId, email: l.email, emailVerified: l.emailVerified, password: l.password });
+
+/** Creates school logins (users + system roles + User ID) for staff, parents and students. */
 @Injectable()
 export class AccountsService {
-  constructor(private readonly passwords: PasswordService) {}
+  private readonly log = new Logger(AccountsService.name);
+
+  constructor(
+    private readonly passwords: PasswordService,
+    private readonly prisma: PrismaService,
+    private readonly delivery: DeliveryService,
+    private readonly urls: WebUrls,
+  ) {}
 
   /**
-   * Passwords chosen by someone else (an administrator) are temporary: the person must replace it at
-   * first sign-in. Only development seeding passes `temporary: false`.
+   * The next User ID for a prefix and year, e.g. TCH-2026-0008. Takes a transaction lock per prefix
+   * and year (held until commit), so two logins created at once never get the same number. The
+   * caller creates the user and then records the ID with `recordLoginId`.
    */
-  async createLogin(tx: TenantTx, schoolId: string, person: NewAccount, roles: readonly SchoolRoleKey[], password: string, temporary = true): Promise<string> {
-    const email = person.email.trim().toLowerCase();
-    if (await tx.user.findUnique({ where: { schoolId_email: { schoolId, email } }, select: { id: true } })) {
-      throw new ConflictException(`A login with the email ${email} already exists in this school`);
-    }
-    const roleRows = await tx.role.findMany({ where: { key: { in: [...roles] }, isSystem: true }, select: { id: true } });
-    if (roleRows.length !== new Set(roles).size) throw new BadRequestException('One or more roles do not exist');
+  async nextLoginId(tx: TenantTx, schoolId: string, prefix: string, year: number) {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`login-id:${schoolId}:${prefix}:${year}`}, 0))`;
+    const last = await tx.loginId.findFirst({ where: { prefix, year }, orderBy: { seq: 'desc' }, select: { seq: true } });
+    const seq = (last?.seq ?? 0) + 1;
+    return { loginId: formatLoginId(prefix, year, seq), prefix, year, seq };
+  }
 
+  /**
+   * Creates a login with a new User ID and a temporary password (or the given one). Passwords chosen
+   * by someone else must be replaced at first sign-in; only development seeding passes `temporary: false`.
+   * Call `announce()` after the transaction commits to email the person.
+   */
+  async createLogin(
+    tx: TenantTx,
+    schoolId: string,
+    person: NewAccount,
+    roles: readonly SchoolRoleKey[],
+    opts: { password?: string; temporary?: boolean } = {},
+  ): Promise<GeneratedLogin> {
+    const roleRows = await tx.role.findMany({ where: { key: { in: [...roles] }, isSystem: true }, select: { id: true } });
+    if (roleRows.length !== new Set(roles).size || roles.length === 0) throw new BadRequestException('One or more roles do not exist');
+    const email = person.email?.trim().toLowerCase() || null;
+    if (!email && !roles.every((r) => r === 'student')) {
+      throw new BadRequestException(`${person.firstName} ${person.lastName} needs an email address: people sign in with their own email.`);
+    }
+    if (email) {
+      const taken = await tx.user.findFirst({ where: { email }, select: { loginId: true, firstName: true, lastName: true } });
+      if (taken) throw new ConflictException(`${email} already signs in as ${taken.firstName} ${taken.lastName} (${taken.loginId}). Use another email, or give that login the extra role in Users & Access.`);
+    }
+    const password = opts.password ?? temporaryPassword();
+    const primary = PRIORITY.find((r) => roles.includes(r))!;
+    const year = person.year ?? new Date().getUTCFullYear();
+
+    const id = await this.nextLoginId(tx, schoolId, LOGIN_PREFIX[primary], year);
     const user = await tx.user.create({
       data: {
         schoolId,
+        loginId: id.loginId,
         email,
+        emailVerifiedAt: email && person.emailVerified ? new Date() : null,
         passwordHash: await this.passwords.hash(password),
-        mustChangePassword: temporary,
+        mustChangePassword: opts.temporary ?? true,
         firstName: person.firstName,
         lastName: person.lastName,
         phone: person.phone ?? null,
       },
+      select: { id: true },
     });
+    await tx.loginId.create({ data: { schoolId, ...id, userId: user.id } });
     await tx.userRole.createMany({ data: roleRows.map((r) => ({ userId: user.id, roleId: r.id, schoolId })) });
-    return user.id;
+    return { userId: user.id, loginId: id.loginId, password, name: `${person.firstName} ${person.lastName}`, role: primary, email, emailVerified: !!(email && person.emailVerified) };
   }
 
   /**
-   * A school-issued login email by role, e.g. "tehmina.aslam.teacher@demo.school"; personal emails stay
-   * on the person's record as contact details. A number is added when the name is already taken.
+   * Emails each new login holder their User ID (after the transaction committed). The temporary
+   * password goes in the email only when the address was verified with a code; otherwise the
+   * administrator hands it over. Never throws.
    */
-  async loginEmail(tx: TenantTx, schoolId: string, firstName: string, lastName: string, role: SchoolRoleKey): Promise<string> {
-    const school = await tx.school.findUniqueOrThrow({ where: { id: schoolId }, select: { slug: true } });
-    const base = `${emailName(firstName, lastName)}.${ROLE_SUFFIX[role]}`;
-    const domain = `@${school.slug}.school`;
-    const taken = new Set(
-      (await tx.user.findMany({ where: { email: { startsWith: base } }, select: { email: true } })).map((u) => u.email),
-    );
-    for (let n = 1; ; n++) {
-      const email = `${base}${n === 1 ? '' : n}${domain}`;
-      if (!taken.has(email)) return email;
+  async announce(schoolId: string, logins: (GeneratedLogin | null | undefined)[]): Promise<void> {
+    const list = logins.filter((l): l is GeneratedLogin => !!l?.email);
+    if (!list.length) return;
+    try {
+      const school = await this.prisma.school.findUniqueOrThrow({ where: { id: schoolId }, select: { name: true, slug: true } });
+      for (const l of list) {
+        await this.delivery.trySend({
+          channel: 'email',
+          to: l.email!,
+          template: 'account_created',
+          schoolId,
+          data: { schoolName: school.name, name: l.name, loginId: l.loginId, signInUrl: this.urls.school(school.slug, '/login'), ...(l.emailVerified && { temporaryPassword: l.password }) },
+        });
+      }
+    } catch (e) {
+      this.log.error(`announce logins failed: ${(e as Error).message}`);
     }
-  }
-
-  /** Creates a login with a generated role-based email and a temporary password (shown once). */
-  async createGeneratedLogin(
-    tx: TenantTx,
-    schoolId: string,
-    person: Omit<NewAccount, 'email'>,
-    roles: readonly SchoolRoleKey[],
-  ): Promise<GeneratedLogin> {
-    const primary = (['teacher', 'accounts', 'school_admin', 'non_teaching_staff', 'parent', 'student'] as const).find((r) => roles.includes(r)) ?? roles[0];
-    const email = await this.loginEmail(tx, schoolId, person.firstName, person.lastName, primary);
-    const password = temporaryPassword();
-    const userId = await this.createLogin(tx, schoolId, { ...person, email }, roles, password);
-    return { userId, email, password };
   }
 }

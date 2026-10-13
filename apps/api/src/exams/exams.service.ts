@@ -269,7 +269,10 @@ export class ExamsService {
             await tx.reportCard.upsert({ where: { examId_studentId: { examId, studentId: c.studentId } }, create: { schoolId, examId, studentId: c.studentId, ...data }, update: data });
           }
         }
-        return { generated: cards.length, passed: cards.filter((c) => c.passed).length };
+        // An administrator's pass / fail decision survives regeneration.
+        await tx.reportCard.updateMany({ where: { examId, passOverride: true }, data: { passed: true } });
+        await tx.reportCard.updateMany({ where: { examId, passOverride: false }, data: { passed: false } });
+        return { generated: cards.length, passed: await tx.reportCard.count({ where: { examId, passed: true } }) };
       },
       { timeout: 60_000 },
     );

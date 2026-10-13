@@ -22,12 +22,16 @@ import { UsersModule } from './users/users.module.js';
 import { DocumentRequestsModule } from './document-requests/document-requests.module.js';
 import { WebsiteModule } from './website/website.module.js';
 import { BillingModule } from './billing/billing.module.js';
+import { PaymentsModule } from './payments/payments.module.js';
+import { AutomationModule } from './automation/automation.module.js';
 import { PrismaExceptionFilter } from './common/prisma-exception.filter.js';
 import { validateEnv } from './config/env.js';
 import { HealthController } from './health/health.controller.js';
 import { PlatformModule } from './platform/platform.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { RedisModule } from './redis/redis.module.js';
+import { JobsModule } from './jobs/jobs.module.js';
+import { DeliveryModule } from './delivery/delivery.module.js';
 import { StaffModule } from './staff/staff.module.js';
 import { StudentsModule } from './students/students.module.js';
 import { TenancyModule } from './tenancy/tenancy.module.js';
@@ -42,6 +46,8 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 60 }]),
     PrismaModule,
     RedisModule,
+    JobsModule,
+    DeliveryModule,
     TenancyModule,
     AuthModule,
     PlatformModule,
@@ -67,6 +73,8 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     DocumentRequestsModule,
     WebsiteModule,
     BillingModule,
+    PaymentsModule,
+    AutomationModule,
   ],
   controllers: [HealthController],
   providers: [{ provide: APP_FILTER, useClass: PrismaExceptionFilter }],
@@ -80,6 +88,14 @@ export class AppModule implements NestModule {
         { path: 'public/school-applications', method: RequestMethod.POST },
         // The marketing page's plan list: the same on every host.
         { path: 'public/plans', method: RequestMethod.GET },
+        // Self-service sign-up on the marketing site.
+        { path: 'public/signup', method: RequestMethod.POST },
+        { path: 'public/signup/code', method: RequestMethod.POST },
+        { path: 'public/signup/slug', method: RequestMethod.GET },
+        // The payment gateway's checkout page (sandbox) and webhooks: no tenant.
+        { path: 'public/pay/:token', method: RequestMethod.GET },
+        { path: 'public/pay/:token/complete', method: RequestMethod.POST },
+        { path: 'public/payments/webhook/:provider', method: RequestMethod.POST },
       )
       .forRoutes({ path: '*path', method: RequestMethod.ALL });
   }

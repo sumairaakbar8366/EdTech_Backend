@@ -75,4 +75,5 @@ export const PLATFORM_NAVIGATION: readonly NavItem[] = [
   { label: 'Applications', path: '/applications' },
   { label: 'Payments', path: '/payments' },
   { label: 'Subscription Plans', path: '/tiers' },
+  { label: 'System', path: '/system' },
 ];

@@ -6,7 +6,8 @@ import { RedisService } from '../redis/redis.service.js';
 
 export type TokenSubject =
   | { scope: 'platform'; sub: string }
-  | { scope: 'school'; sub: string; sid: string };
+  /** `sup` / `supn`: the platform owner working inside the school ("Open as admin"). */
+  | { scope: 'school'; sub: string; sid: string; sup?: string; supn?: string };
 
 interface StoredToken {
   subject: TokenSubject;
