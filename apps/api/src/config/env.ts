@@ -165,6 +165,18 @@ export class Env {
   @MinLength(32)
   PAYMENT_WEBHOOK_SECRET?: string;
 
+  /**
+   * "required": a 6-digit code proves each email (sign-up, first sign-in). "off" skips the codes so any
+   * address can be used while testing; refused in production.
+   */
+  @IsIn(['required', 'off'])
+  EMAIL_VERIFICATION: 'required' | 'off' = 'required';
+
+  /** OAuth Web client ID for "Continue with Google" (Google Cloud Console). Empty: not offered. */
+  @IsOptional()
+  @IsString()
+  GOOGLE_CLIENT_ID?: string;
+
   /** Sender shown on every email, e.g. "SchoolERP <no-reply@schoolerp.pk>". */
   @IsString()
   MAIL_FROM = 'SchoolERP <no-reply@schoolerp.local>';
@@ -173,6 +185,9 @@ export class Env {
 export function validateEnv(config: Record<string, unknown>): Env {
   const env = plainToInstance(Env, config, { exposeDefaultValues: true });
   const errors = validateSync(env, { skipMissingProperties: false });
+  if (env.NODE_ENV === 'production' && env.EMAIL_VERIFICATION === 'off') {
+    throw new Error('Invalid environment configuration:\n  EMAIL_VERIFICATION=off is for testing only and cannot be used in production');
+  }
   if (env.NODE_ENV === 'production' && !env.PAYMENT_WEBHOOK_SECRET) {
     throw new Error('Invalid environment configuration:\n  PAYMENT_WEBHOOK_SECRET is required in production');
   }

@@ -1,5 +1,6 @@
 import { Transform } from 'class-transformer';
-import { IsBoolean, IsEmail, IsOptional, IsString, IsUUID, Length, Matches, MaxLength, MinLength } from 'class-validator';
+import { IsBoolean, IsEmail, IsIn, IsOptional, IsString, IsUUID, Length, Matches, MaxLength, MinLength } from 'class-validator';
+import { SOCIAL_PROVIDERS, type SocialProvider } from './social-identity.service.js';
 
 export class LoginDto {
   /** The person's email (or, for a student without one, the User ID such as STU-2026-0142). */
@@ -47,6 +48,30 @@ export class ForgotPasswordDto {
 export class ResetPasswordDto {
   @IsString() @MinLength(20) @MaxLength(100) token: string;
   @IsString() @MinLength(12) @MaxLength(256) newPassword: string;
+}
+
+/** "Continue with Google" on /login: Google's ID token and nonce; `school` when choosing between several. */
+export class SocialTicketDto {
+  @IsIn(SOCIAL_PROVIDERS) provider: SocialProvider;
+  @IsString() @MinLength(20) @MaxLength(8192) credential: string;
+  @IsString() @MinLength(16) @MaxLength(128) nonce: string;
+  @IsOptional() @IsString() @MinLength(3) @MaxLength(63) school?: string;
+}
+
+/** The main domain's single /login: email or User ID, password, and the school when choosing. */
+export class UniversalLoginDto {
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  @IsString()
+  @MinLength(1)
+  @MaxLength(254)
+  identifier: string;
+
+  @IsString() @MinLength(1) @MaxLength(256) password: string;
+
+  /** A school's slug, or "console" for the owner console. */
+  @IsOptional() @IsString() @MinLength(3) @MaxLength(63) school?: string;
+
+  @IsOptional() @IsBoolean() remember?: boolean;
 }
 
 export class TicketDto {

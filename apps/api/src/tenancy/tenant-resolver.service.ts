@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { resolveHost, type HostConfig } from '@schoolerp/shared';
+import { resolveHost, type HostConfig, type HostResolution } from '@schoolerp/shared';
 import type { Env } from '../config/env.js';
 import type { TenantContext } from '../common/request-context.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -34,11 +34,19 @@ export class TenantResolverService {
     };
   }
 
+  /** A school by its slug (the /<slug> paths on the main domain). */
+  resolveSlug(slug: string): Promise<ResolvedTenant | null> {
+    return this.lookup({ kind: 'subdomain', slug });
+  }
+
   async resolve(host: string | undefined): Promise<ResolvedTenant | null> {
     const resolution = resolveHost(host, this.hostConfig);
     if (!resolution) return null;
     if (resolution.kind === 'platform') return { kind: 'platform' };
+    return this.lookup(resolution);
+  }
 
+  private async lookup(resolution: Exclude<HostResolution, { kind: 'platform' }>): Promise<ResolvedTenant | null> {
     const cacheKey = resolution.kind === 'subdomain' ? `s:${resolution.slug}` : `d:${resolution.hostname}`;
     const cached = this.cache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return cached.value;

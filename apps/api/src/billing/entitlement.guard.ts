@@ -2,6 +2,7 @@ import { CanActivate, ExecutionContext, HttpException, HttpStatus, Injectable } 
 import { FEATURE_INFO, type PlanFeature } from '@schoolerp/shared';
 import type { AppRequest } from '../common/request-context.js';
 import { SubscriptionStateService } from './subscription-state.service.js';
+import { apiPath } from '../tenancy/path-tenant.js';
 
 const READS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -40,7 +41,7 @@ export class EntitlementGuard implements CanActivate {
     if (req.auth?.scope !== 'school') return true;
     // The platform owner's support session may open any school, even a locked one, to help it.
     if (req.auth.support) return true;
-    const path = (req.originalUrl ?? req.url).split('?')[0]!.replace(/^\/api/, '');
+    const path = apiPath(req);
     if (ALLOWED_WHEN_LOCKED.some((r) => r.test(path))) return true;
     const s = await this.state.get(req.auth.schoolId);
     if (s.locked) {

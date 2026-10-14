@@ -1,14 +1,15 @@
 // Tenant addressing rules. Source: architecture board, page 2 (Domain / Tenant Resolution).
-// A school is reached at <slug>.<base domain>, or at a verified custom domain.
+// A school is reached at <base domain>/<slug> (or <slug>.<base domain>), or at its verified own domain.
 
 /** DNS label rules: 3–63 chars, lowercase letters, digits and inner hyphens. */
 export const SCHOOL_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/;
 
-/** Subdomains that can never be a school. */
+/** Names that can never be a school: subdomains in use, and the main domain's own paths (/login, /console…). */
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   'admin', 'api', 'app', 'www', 'mail', 'smtp', 'ftp', 'static', 'assets', 'cdn', 'docs',
   'help', 'support', 'status', 'billing', 'platform', 'auth', 'login', 'dashboard', 'dev',
   'staging', 'test', 'demo-admin', 'root', 'system',
+  'console', 'access', 'signup', 'sso', 'pay', 'welcome', 'logout', 'images', 'src', 'node_modules',
 ]);
 
 export function isValidSchoolSlug(slug: string): boolean {

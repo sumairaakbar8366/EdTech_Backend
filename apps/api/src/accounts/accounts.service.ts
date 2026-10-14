@@ -1,3 +1,5 @@
+import { ConfigService } from '@nestjs/config';
+import type { Env } from '../config/env.js';
 import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
 import type { SchoolRoleKey } from '@schoolerp/shared';
 import { randomInt } from 'node:crypto';
@@ -69,7 +71,16 @@ export class AccountsService {
     private readonly prisma: PrismaService,
     private readonly delivery: DeliveryService,
     private readonly urls: WebUrls,
-  ) {}
+    config: ConfigService<Env, true>,
+  ) {
+    this.verificationOff = config.get('EMAIL_VERIFICATION', { infer: true }) === 'off';
+    this.google = !!config.get('GOOGLE_CLIENT_ID', { infer: true })?.trim();
+  }
+
+  /** EMAIL_VERIFICATION=off (testing): every new login gets its password by email. */
+  private readonly verificationOff: boolean;
+  /** "Continue with Google" is offered on the sign-in page. */
+  private readonly google: boolean;
 
   /**
    * The next User ID for a prefix and year, e.g. TCH-2026-0008. Takes a transaction lock per prefix
@@ -131,8 +142,8 @@ export class AccountsService {
 
   /**
    * Emails each new login holder their User ID (after the transaction committed). The temporary
-   * password goes in the email only when the address was verified with a code; otherwise the
-   * administrator hands it over. Never throws.
+   * password goes in the email only when the address was verified with a code (always while
+   * EMAIL_VERIFICATION=off); otherwise the administrator hands it over. Never throws.
    */
   async announce(schoolId: string, logins: (GeneratedLogin | null | undefined)[]): Promise<void> {
     const list = logins.filter((l): l is GeneratedLogin => !!l?.email);
@@ -145,7 +156,7 @@ export class AccountsService {
           to: l.email!,
           template: 'account_created',
           schoolId,
-          data: { schoolName: school.name, name: l.name, loginId: l.loginId, signInUrl: this.urls.school(school.slug, '/login'), ...(l.emailVerified && { temporaryPassword: l.password }) },
+          data: { schoolName: school.name, name: l.name, loginId: l.loginId, signInUrl: this.urls.school(school.slug, '/login'), ...((l.emailVerified || this.verificationOff) && { temporaryPassword: l.password }), google: this.google },
         });
       }
     } catch (e) {

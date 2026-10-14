@@ -5,10 +5,18 @@ import { RedisService } from '../redis/redis.service.js';
 const TTL_SECONDS = 120;
 
 export interface LoginTicket {
+  /** The school; empty for a platform-console sign-in ("platform"). */
   schoolId: string;
+  /** The school user; for "platform" the platform admin's id. */
   userId: string;
-  /** "signup": the new admin continues on their school's site. "support": the platform owner opens a school. */
-  purpose: 'signup' | 'support';
+  /**
+   * "signup": the new admin continues on their school's site. "support": the platform owner opens a
+   * school. "google" / "login": a sign-in on the main site's /login (Google or password), continued in
+   * the school. "platform": the owner signed in on /login, continued in the console.
+   */
+  purpose: 'signup' | 'support' | 'google' | 'login' | 'platform';
+  /** "Keep me signed in" chosen on the main /login. */
+  remember?: boolean;
   /** For support sessions: the platform admin acting. */
   platformAdminId?: string;
 }

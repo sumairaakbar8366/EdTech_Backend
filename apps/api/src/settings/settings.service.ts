@@ -52,9 +52,10 @@ export class SettingsService {
       this.prisma.domain.findMany({ where: { schoolId }, orderBy: { createdAt: 'asc' } }),
     ]);
     return {
-      school: { ...school, address: `${school.slug}.${this.baseDomain}` },
+      // Schools live at /<slug> on the main domain; an own (paid) domain points its CNAME at the main domain.
+      school: { ...school, address: `${this.baseDomain}/${school.slug}` },
       settings,
-      domains: domains.map((d) => ({ ...d, txtName: verifyRecordName(d.hostname), txtValue: d.id, cnameTarget: `${school.slug}.${this.baseDomain}` })),
+      domains: domains.map((d) => ({ ...d, txtName: verifyRecordName(d.hostname), txtValue: d.id, cnameTarget: this.baseDomain })),
     };
   }
 
@@ -118,14 +119,13 @@ export class SettingsService {
 
   /**
    * Verifies a domain: the TXT record `_schoolerp-verify.<domain>` must contain the domain id, or
-   * the domain must be a CNAME of the school's own address. Verified domains start resolving at once.
+   * the domain must be a CNAME of the main domain. Verified domains start resolving at once.
    */
   async verifyDomain(schoolId: string, id: string) {
     const domain = await this.prisma.domain.findFirst({ where: { id, schoolId } });
     if (!domain) throw new NotFoundException('Domain not found');
     if (domain.verifiedAt) return domain;
-    const school = await this.prisma.school.findUniqueOrThrow({ where: { id: schoolId }, select: { slug: true } });
-    const target = `${school.slug}.${this.baseDomain}`;
+    const target = this.baseDomain;
     const [txt, cname] = await Promise.all([
       resolveTxt(verifyRecordName(domain.hostname)).then((r) => r.map((parts) => parts.join(''))).catch(() => [] as string[]),
       resolveCname(domain.hostname).catch(() => [] as string[]),

@@ -8,12 +8,14 @@ import { DeliveryService } from '../delivery/delivery.service.js';
 import { WebUrls } from '../delivery/web-urls.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PermissionService } from '../rbac/permission.service.js';
+import { SocialIdentityService, type SocialProvider } from './social-identity.service.js';
 import { LoginEventsService, type LoginContext } from './login-events.service.js';
 import { LoginTicketService } from './login-ticket.service.js';
 import { PasswordResetService, RESET_TTL_MINUTES } from './password-reset.service.js';
 import { PasswordService } from './password.service.js';
 import { RefreshTokenService, type TokenSubject } from './refresh-token.service.js';
 import { VerificationCodesService } from './verification-codes.service.js';
+import type { SchoolScopedClient } from '../prisma/prisma.service.js';
 
 export type AccessTokenPayload =
   | { sub: string; scope: 'platform' }
@@ -32,10 +34,19 @@ const INVALID_SCHOOL_CREDENTIALS = 'Invalid email (or User ID) or password';
 
 const ROLE_LABEL: Record<string, string> = { school_admin: 'Admin', accounts: 'Accounts', teacher: 'Teacher', non_teaching_staff: 'Staff', parent: 'Parent', student: 'Student' };
 
+/** A person the main /login (or Google) matched: the owner, or a user at one school. */
+type SignInCandidate = { kind: 'platform'; adminId: string; name: string } | { kind: 'school'; school: { id: string; slug: string; name: string }; userId: string };
+
+/** Where a main-site sign-in continues: straight into one account, or a choice of schools. */
+export type SignInOutcome = { continueUrl: string } | { choose: { school: string; name: string }[] };
+
 @Injectable()
 export class AuthService {
   private readonly log = new Logger(AuthService.name);
   private readonly accessTtl: number;
+
+  /** EMAIL_VERIFICATION=off (testing only): nobody is asked to confirm their email after signing in. */
+  private readonly emailCheckOff: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -49,9 +60,11 @@ export class AuthService {
     private readonly events: LoginEventsService,
     private readonly delivery: DeliveryService,
     private readonly urls: WebUrls,
+    private readonly social: SocialIdentityService,
     config: ConfigService<Env, true>,
   ) {
     this.accessTtl = config.get('JWT_ACCESS_TTL_SECONDS', { infer: true });
+    this.emailCheckOff = config.get('EMAIL_VERIFICATION', { infer: true }) === 'off';
   }
 
   /**
@@ -89,9 +102,97 @@ export class AuthService {
     return this.issue({ scope: 'school', sub: user.id, sid: tenant.schoolId }, user.mustChangePassword);
   }
 
+  /**
+   * The single /login on the main domain. The owner (platform admin email) goes to the console; a
+   * school user goes to their school. A User ID like ADM-2026-0001 exists in every school and an
+   * email may be used at several, so every active school is checked for this identifier with this
+   * password: one match continues at once, several are returned to choose from (`school` picks one).
+   */
+  async universalLogin(identifier: string, password: string, school: string | undefined, ctx: LoginContext = {}, remember = false): Promise<SignInOutcome> {
+    const id = identifier.trim();
+    const byEmail = id.includes('@');
+    const candidates: SignInCandidate[] = [];
+    if (byEmail && (!school || school === 'console')) {
+      const admin = await this.prisma.platformAdmin.findUnique({ where: { email: id.toLowerCase() } });
+      if (admin?.isActive && (await this.passwords.verify(admin.passwordHash, password))) candidates.push({ kind: 'platform', adminId: admin.id, name: admin.name });
+    }
+    if (school !== 'console') {
+      const found = await this.findInSchools(school, (db) =>
+        db.user.findFirst({ where: { ...(byEmail ? { email: id.toLowerCase() } : { loginId: normaliseLoginId(id) }), status: 'active' }, select: { id: true, passwordHash: true } }),
+      );
+      for (const f of found) if (await this.passwords.verify(f.user.passwordHash, password)) candidates.push({ kind: 'school', school: f.school, userId: f.user.id });
+    }
+    if (!candidates.length) {
+      await this.events.record({ ...ctx, identifier: id, success: false, reason: 'no matching account (main /login)' });
+      throw new UnauthorizedException(INVALID_SCHOOL_CREDENTIALS);
+    }
+    return this.signInOutcome(candidates, 'login', remember);
+  }
+
+  /**
+   * "Continue with Google": the Google sign-in happens on the main site (Google only accepts the
+   * registered address). The Google-verified email is looked up in the given school, or in every
+   * school; one match continues, several are returned to choose from. Within a school the email
+   * must belong to exactly one person (a young student may share a parent's address).
+   */
+  async providerTicket(slug: string | undefined, provider: SocialProvider, credential: string, nonce: string, ctx: LoginContext = {}): Promise<SignInOutcome> {
+    const who = await this.social.verify(provider, credential, nonce);
+    const found = await this.findInSchools(slug, (db) => db.user.findMany({ where: { email: who.email, status: 'active' }, select: { id: true, emailVerifiedAt: true }, take: 2 }));
+    const shared = found.filter((f) => f.user.length > 1);
+    const candidates: SignInCandidate[] = found.filter((f) => f.user.length === 1).map((f) => ({ kind: 'school', school: f.school, userId: f.user[0]!.id }));
+    if (!candidates.length) {
+      await this.events.record({ ...ctx, schoolId: found[0]?.school.id, identifier: who.email, method: provider, success: false, reason: shared.length ? 'email shared by several accounts' : 'unknown account' });
+      throw new UnauthorizedException(
+        shared.length
+          ? 'Several accounts at your school use this email. Sign in with your User ID and password.'
+          : `No school account uses this Google email (${who.email}). Ask your school office to add it, or sign in with your email or User ID.`,
+      );
+    }
+    // Google has verified the address, which is what the email check would prove.
+    for (const c of candidates) {
+      if (c.kind !== 'school') continue;
+      const db = this.prisma.forSchool(c.school.id);
+      await db.user.updateMany({ where: { id: c.userId, emailVerifiedAt: null }, data: { emailVerifiedAt: new Date() } });
+    }
+    return this.signInOutcome(candidates, provider);
+  }
+
+  /** Runs `find` in each active school (or the one named): RLS only shows one school at a time. */
+  private async findInSchools<T>(slug: string | undefined, find: (db: SchoolScopedClient) => Promise<T | null>): Promise<{ school: { id: string; slug: string; name: string }; user: NonNullable<T> }[]> {
+    const schools = await this.prisma.school.findMany({ where: { status: 'active', ...(slug && { slug: slug.trim().toLowerCase() }) }, select: { id: true, slug: true, name: true }, orderBy: { name: 'asc' } });
+    const out: { school: (typeof schools)[number]; user: NonNullable<T> }[] = [];
+    for (let i = 0; i < schools.length; i += 8) {
+      const batch = await Promise.all(schools.slice(i, i + 8).map(async (school) => ({ school, user: await find(this.prisma.forSchool(school.id)) })));
+      for (const b of batch) if (b.user && (!Array.isArray(b.user) || b.user.length)) out.push({ school: b.school, user: b.user as NonNullable<T> });
+    }
+    return out;
+  }
+
+  /** One match: a one-time link into it. Several: the list to choose from. */
+  private async signInOutcome(candidates: SignInCandidate[], purpose: 'login' | 'google', remember = false): Promise<SignInOutcome> {
+    if (candidates.length > 1) {
+      return { choose: candidates.map((c) => (c.kind === 'platform' ? { school: 'console', name: 'Owner console (SchoolERP)' } : { school: c.school.slug, name: c.school.name })) };
+    }
+    const c = candidates[0]!;
+    if (c.kind === 'platform') {
+      const ticket = await this.tickets.create({ schoolId: '', userId: c.adminId, purpose: 'platform', remember });
+      return { continueUrl: this.urls.platform(`/welcome?ticket=${ticket}`) };
+    }
+    const ticket = await this.tickets.create({ schoolId: c.school.id, userId: c.userId, purpose, remember });
+    return { continueUrl: this.urls.school(c.school.slug, `/welcome?ticket=${ticket}`) };
+  }
+
   /** Exchanges a one-time ticket (sign-up hand-over) for a session on the school's own host. */
-  async exchangeTicket(tenant: TenantContext, token: string, ctx: LoginContext = {}): Promise<IssuedTokens> {
+  async exchangeTicket(tenant: TenantContext, token: string, ctx: LoginContext = {}): Promise<IssuedTokens & { remember?: boolean }> {
     const ticket = await this.tickets.consume(token);
+    if (ticket.purpose === 'platform') {
+      if (tenant.kind !== 'platform') throw new BadRequestException('This sign-in link belongs to the owner console');
+      const admin = await this.prisma.platformAdmin.findUnique({ where: { id: ticket.userId } });
+      if (!admin?.isActive) throw new UnauthorizedException('This account cannot sign in');
+      await this.prisma.platformAdmin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
+      await this.events.record({ ...ctx, platformAdminId: admin.id, identifier: admin.email, name: admin.name, roles: ['platform_owner'], success: true });
+      return { ...(await this.issue({ scope: 'platform', sub: admin.id })), remember: ticket.remember };
+    }
     if (tenant.kind !== 'school' || tenant.schoolId !== ticket.schoolId) throw new BadRequestException('This sign-in link belongs to another school');
     const user = await this.prisma.forSchool(ticket.schoolId).user.findUnique({ where: { id: ticket.userId }, select: { status: true, mustChangePassword: true, loginId: true, email: true, firstName: true, lastName: true } });
     if (!user || user.status !== 'active') throw new UnauthorizedException('This account cannot sign in');
@@ -104,8 +205,9 @@ export class AuthService {
       await this.events.record({ ...ctx, schoolId: ticket.schoolId, userId: ticket.userId, platformAdminId: ticket.platformAdminId, loginId: user.loginId, identifier: admin.email, name: `Platform support · ${admin.name}`, roles: ['school_admin'], method: 'support', success: true });
       return this.issue({ scope: 'school', sub: ticket.userId, sid: ticket.schoolId, sup: ticket.platformAdminId, supn: admin.name });
     }
-    await this.events.record({ ...ctx, schoolId: ticket.schoolId, userId: ticket.userId, loginId: user.loginId, identifier: user.email ?? user.loginId, name: `${user.firstName} ${user.lastName}`, method: 'ticket', success: true });
-    return this.issue({ scope: 'school', sub: ticket.userId, sid: ticket.schoolId }, user.mustChangePassword);
+    const method = ticket.purpose === 'google' ? 'google' : ticket.purpose === 'login' ? 'password' : 'ticket';
+    await this.events.record({ ...ctx, schoolId: ticket.schoolId, userId: ticket.userId, loginId: user.loginId, identifier: user.email ?? user.loginId, name: `${user.firstName} ${user.lastName}`, method, success: true });
+    return { ...(await this.issue({ scope: 'school', sub: ticket.userId, sid: ticket.schoolId }, user.mustChangePassword)), remember: ticket.remember };
   }
 
   /** Rotates the refresh token. The account must still be active and on this tenant. */
@@ -146,7 +248,7 @@ export class AuthService {
     const access = await this.permissions.loadUserAccess(auth.schoolId, auth.userId);
     const school = tenant.kind === 'school' ? { id: tenant.schoolId, name: tenant.name, slug: tenant.slug } : null;
     const { emailVerifiedAt, ...rest } = user;
-    return { scope: 'school' as const, user: { ...rest, emailVerified: !!emailVerifiedAt }, school, ...access, support: auth.support ? { name: auth.support.name } : null };
+    return { scope: 'school' as const, user: { ...rest, emailVerified: !!emailVerifiedAt || this.emailCheckOff }, school, ...access, support: auth.support ? { name: auth.support.name } : null };
   }
 
   /**

@@ -6,6 +6,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module.js';
+import { pathTenantMiddleware } from './tenancy/path-tenant.js';
 import type { Env } from './config/env.js';
 
 async function bootstrap() {
@@ -19,6 +20,8 @@ async function bootstrap() {
 
   app.use(helmet());
   app.use(cookieParser());
+  // /api/s/<slug>/… and /api/console/… (schools and the console on the main domain): before routing.
+  app.use(pathTenantMiddleware);
   app.setGlobalPrefix('api');
   app.useGlobalPipes(
     new ValidationPipe({

@@ -2,6 +2,7 @@ import { Injectable, Logger, type CallHandler, type ExecutionContext, type NestI
 import { tap, type Observable } from 'rxjs';
 import type { AppRequest } from '../common/request-context.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { apiPath } from '../tenancy/path-tenant.js';
 
 const WRITE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -21,7 +22,7 @@ export class AuditInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const req = context.switchToHttp().getRequest<AppRequest>();
     if (!WRITE.has(req.method) || req.auth?.scope !== 'school') return next.handle();
-    const path = (req.originalUrl ?? req.url).split('?')[0]!.replace(/^\/api/, '');
+    const path = apiPath(req);
     if (SKIP.some((r) => r.test(path))) return next.handle();
     const { schoolId, userId, support } = req.auth;
     return next.handle().pipe(

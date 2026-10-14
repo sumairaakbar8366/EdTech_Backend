@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createReadStream } from 'node:fs';
+import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -27,7 +27,13 @@ export class StorageService {
   }
 
   read(key: string): Readable {
-    return createReadStream(this.pathFor(key));
+    const path = this.pathFor(key);
+    // Checked up front: a stream that fails mid-response would reach the client as a 400 carrying the server path.
+    if (!existsSync(path)) {
+      this.logger.warn(`Stored file missing for key ${key}`);
+      throw new NotFoundException('This file is no longer available');
+    }
+    return createReadStream(path);
   }
 
   async delete(key: string): Promise<void> {

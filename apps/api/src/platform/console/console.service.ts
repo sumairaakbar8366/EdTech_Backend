@@ -95,7 +95,7 @@ export class ConsoleService {
     const [state, counts, payments, logins, extra] = await Promise.all([
       this.state.get(id),
       this.countsFor(id),
-      this.prisma.subscriptionPayment.findMany({ where: { schoolId: id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, amount: true, currency: true, method: true, cardBrand: true, cardLast4: true, status: true, billingCycle: true, paidAt: true, createdAt: true, periodEnd: true, failureReason: true, tier: { select: { name: true } } } }),
+      this.prisma.subscriptionPayment.findMany({ where: { schoolId: id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, purpose: true, amount: true, currency: true, method: true, cardBrand: true, cardLast4: true, status: true, billingCycle: true, paidAt: true, createdAt: true, periodEnd: true, failureReason: true, tier: { select: { name: true } } } }),
       this.prisma.loginEvent.findMany({ where: { schoolId: id }, orderBy: { createdAt: 'desc' }, take: 15, select: { id: true, name: true, identifier: true, roles: true, success: true, reason: true, method: true, createdAt: true } }),
       this.prisma.inSchoolTransaction(id, async (tx) => {
         const notSupport = { NOT: { loginId: { startsWith: SUPPORT_PREFIX } } };
@@ -182,6 +182,70 @@ export class ConsoleService {
   // --- People directory -----------------------------------------------------------------------
 
   /** Everyone of one kind, across all schools (or one school), from that kind's own table. */
+  /**
+   * Every login (User ID) of one school in a single list: who it belongs to (staff, student or
+   * parent record), its roles, email, status and how and when it last signed in.
+   */
+  async logins(schoolId: string, opts: { q?: string; page: number; pageSize: number }) {
+    await this.prisma.school.findUniqueOrThrow({ where: { id: schoolId }, select: { id: true } });
+    const q = opts.q?.trim();
+    const where: Prisma.UserWhereInput = q ? { OR: ['loginId', 'firstName', 'lastName', 'email'].map((f) => ({ [f]: { contains: q, mode: 'insensitive' as const } })) } : {};
+    const { users, total, employees, students, guardians } = await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+      const [users, total] = await Promise.all([
+        tx.user.findMany({
+          where,
+          orderBy: { loginId: 'asc' },
+          skip: (opts.page - 1) * opts.pageSize,
+          take: opts.pageSize,
+          select: { id: true, loginId: true, firstName: true, lastName: true, email: true, emailVerifiedAt: true, status: true, lastLoginAt: true, createdAt: true, mustChangePassword: true, userRoles: { select: { role: { select: { key: true, name: true } } } } },
+        }),
+        tx.user.count({ where }),
+      ]);
+      const ids = users.map((u) => u.id);
+      const [employees, students, guardians] = await Promise.all([
+        tx.employee.findMany({ where: { userId: { in: ids } }, select: { userId: true, employeeNo: true, designation: true, staffType: true } }),
+        tx.student.findMany({ where: { userId: { in: ids } }, select: { userId: true, admissionNo: true, enrollments: { where: { status: 'enrolled' }, orderBy: { createdAt: 'desc' }, take: 1, select: { section: { select: { name: true, schoolClass: { select: { name: true } } } } } } } }),
+        tx.guardian.findMany({ where: { userId: { in: ids } }, select: { userId: true, children: { select: { student: { select: { firstName: true, lastName: true, admissionNo: true } } } } } }),
+      ]);
+      return { users, total, employees, students, guardians };
+    });
+    // The last successful sign-in method per login (password, Google, sign-up link, support…).
+    const events = await this.prisma.loginEvent.findMany({ where: { schoolId, userId: { in: users.map((u) => u.id) }, success: true }, orderBy: { createdAt: 'desc' }, distinct: ['userId'], select: { userId: true, method: true } });
+    const method = new Map(events.map((e) => [e.userId, e.method]));
+    const byUser = <T extends { userId: string | null }>(list: T[]) => new Map(list.map((x) => [x.userId!, x]));
+    const emp = byUser(employees);
+    const stu = byUser(students);
+    const gua = byUser(guardians);
+    const items = users.map((u) => {
+      const e = emp.get(u.id);
+      const st = stu.get(u.id);
+      const g = gua.get(u.id);
+      const sec = st?.enrollments[0]?.section;
+      const linkedTo = e
+        ? { kind: e.staffType === 'teaching' ? 'Teacher' : 'Staff', reference: e.employeeNo, detail: e.designation }
+        : st
+          ? { kind: 'Student', reference: st.admissionNo, detail: sec ? `${sec.schoolClass.name} ${sec.name}` : 'Not enrolled' }
+          : g
+            ? { kind: 'Parent', reference: null, detail: g.children.length ? `Parent of ${g.children.map((c) => `${c.student.firstName} ${c.student.lastName} (${c.student.admissionNo})`).join(', ')}` : 'No children linked' }
+            : null;
+      return {
+        id: u.id,
+        loginId: u.loginId,
+        name: `${u.firstName} ${u.lastName}`,
+        roles: u.userRoles.map((r) => r.role.name),
+        linkedTo,
+        email: u.email,
+        emailVerified: !!u.emailVerifiedAt,
+        status: u.status,
+        mustChangePassword: u.mustChangePassword,
+        lastLoginAt: u.lastLoginAt,
+        lastLoginMethod: method.get(u.id) ?? null,
+        createdAt: u.createdAt,
+      };
+    });
+    return { items, total, page: opts.page, pageSize: opts.pageSize };
+  }
+
   async people(kind: PersonKind, opts: { schoolId?: string; q?: string; page: number; pageSize: number }) {
     const schools = await this.prisma.school.findMany({ where: opts.schoolId ? { id: opts.schoolId } : undefined, select: { id: true, name: true, slug: true }, orderBy: { name: 'asc' } });
     const q = opts.q?.trim();

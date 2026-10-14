@@ -1,4 +1,5 @@
 import type { Request } from 'express';
+import type { PathTenant } from '../tenancy/path-tenant.js';
 
 export type TenantContext =
   | { kind: 'platform' }
@@ -11,6 +12,10 @@ export type AuthContext =
 
 export interface AppRequest extends Request {
   tenant?: TenantContext;
+  /** Set by pathTenantMiddleware for /api/s/<slug>/… and /api/console/… requests. */
+  pathTenant?: PathTenant;
+  /** Where this tenant's API lives for the browser ("/api/s/demo"); the session cookie's path. */
+  apiBase?: string;
   auth?: AuthContext;
   /** Permission keys of the current school user, loaded once per request. */
   permissionKeys?: Set<string>;

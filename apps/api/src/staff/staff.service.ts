@@ -125,8 +125,11 @@ export class StaffService {
     return this.get(schoolId, own.id);
   }
 
-  create(schoolId: string, dto: CreateEmployeeDto, actorUserId: string) {
-    return this.prisma.inSchoolTransaction(schoolId, (tx) => this.createInTx(tx, schoolId, dto, actorUserId));
+  async create(schoolId: string, dto: CreateEmployeeDto, actorUserId: string) {
+    const created = await this.prisma.inSchoolTransaction(schoolId, (tx) => this.createInTx(tx, schoolId, dto, actorUserId));
+    // Like every other new login: the person is emailed their User ID (after the commit).
+    if (created.login) await this.accounts.announce(schoolId, [created.login]);
+    return created;
   }
 
   /** Creates an employee inside an existing school transaction (also used when hiring). */
@@ -184,7 +187,8 @@ export class StaffService {
           throw new ConflictException(`This teacher has ${assigned} teaching assignment(s). Remove them before changing the staff type.`);
         }
       }
-      if (dto.email === null && current.userId) {
+      // Only removing an existing address is refused; a record that never had one (its login does) can still be edited.
+      if (dto.email === null && current.email && current.userId) {
         throw new BadRequestException('A staff member with a login must keep an email address');
       }
 

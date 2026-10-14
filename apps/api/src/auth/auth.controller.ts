@@ -18,10 +18,12 @@ import type { Env } from '../config/env.js';
 import type { AppRequest, AuthContext } from '../common/request-context.js';
 import { AuthService, type IssuedTokens } from './auth.service.js';
 import { AllowPendingPassword, CurrentAuth, Public } from './decorators.js';
-import { ChangePasswordDto, ForgotPasswordDto, ForgotUserIdDto, LoginDto, ResetPasswordDto, ResetTokenDto, SendEmailCodeDto, TicketDto, VerifyEmailCodeDto } from './login.dto.js';
+import { ChangePasswordDto, ForgotPasswordDto, ForgotUserIdDto, LoginDto, ResetPasswordDto, ResetTokenDto, SendEmailCodeDto, SocialTicketDto, TicketDto, UniversalLoginDto, VerifyEmailCodeDto } from './login.dto.js';
 
 const REFRESH_COOKIE = 'schoolerp_rt';
-const REFRESH_COOKIE_PATH = '/api/auth';
+/** The session cookie lives under this tenant's API ("/api/s/demo/auth", "/api/console/auth" or
+ * "/api/auth" on a school's own domain), so each school and the console keep their own sign-in. */
+const refreshCookiePath = (res: Response) => `${(res.req as AppRequest).apiBase ?? '/api'}/auth`;
 
 /**
  * Access token: short-lived JWT returned in the body, kept in memory by the client.
@@ -57,7 +59,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async ticket(@Req() req: AppRequest, @Body() dto: TicketDto, @Res({ passthrough: true }) res: Response) {
     assertCsrfHeader(req);
-    return this.respond(res, await this.auth.exchangeTicket(req.tenant!, dto.ticket, loginContext(req)), false);
+    const tokens = await this.auth.exchangeTicket(req.tenant!, dto.ticket, loginContext(req));
+    return this.respond(res, tokens, tokens.remember === true);
   }
 
   @Public()
@@ -175,7 +178,7 @@ export class AuthController {
       res.setHeader('Cache-Control', 'no-store');
       return { accessToken: tokens.accessToken, tokenType: 'Bearer', expiresIn: tokens.expiresIn };
     }
-    const base = { httpOnly: true, secure: this.secureCookies, sameSite: 'strict' as const, path: REFRESH_COOKIE_PATH };
+    const base = { httpOnly: true, secure: this.secureCookies, sameSite: 'strict' as const, path: refreshCookiePath(res) };
     const lifetime = remember ? { maxAge: this.auth.refreshMaxAgeSeconds * 1000 } : {};
     res.cookie(REFRESH_COOKIE, tokens.refreshToken, { ...base, ...lifetime });
     res.cookie(REMEMBER_COOKIE, remember ? '1' : '0', { ...base, ...lifetime });
@@ -184,7 +187,7 @@ export class AuthController {
   }
 
   private clearCookie(res: Response): void {
-    const base = { httpOnly: true, secure: this.secureCookies, sameSite: 'strict' as const, path: REFRESH_COOKIE_PATH };
+    const base = { httpOnly: true, secure: this.secureCookies, sameSite: 'strict' as const, path: refreshCookiePath(res) };
     res.clearCookie(REFRESH_COOKIE, base);
     res.clearCookie(REMEMBER_COOKIE, base);
   }
@@ -212,5 +215,37 @@ function readRefreshCookie(req: AppRequest): string | undefined {
 function assertCsrfHeader(req: AppRequest): void {
   if (req.headers['x-requested-with'] !== 'XMLHttpRequest') {
     throw new ForbiddenException('Missing X-Requested-With header');
+  }
+}
+
+/** "Continue with Google" for a school's sign-in, completed on the main site. */
+@Public()
+@UseGuards(ThrottlerGuard)
+@Controller('public/social')
+export class SocialSignInController {
+  constructor(private readonly auth: AuthService) {}
+
+  /** Google's ID token → a one-time link into the person's school (2 minutes), or schools to choose from. */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('ticket')
+  @HttpCode(HttpStatus.OK)
+  ticket(@Req() req: AppRequest, @Body() dto: SocialTicketDto) {
+    return this.auth.providerTicket(dto.school, dto.provider, dto.credential, dto.nonce, loginContext(req));
+  }
+}
+
+/** The main domain's single /login for the owner and every school user. */
+@Public()
+@UseGuards(ThrottlerGuard)
+@Controller('public/login')
+export class UniversalLoginController {
+  constructor(private readonly auth: AuthService) {}
+
+  /** A one-time link into the matching account, or the schools to choose from. */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post()
+  @HttpCode(HttpStatus.OK)
+  login(@Req() req: AppRequest, @Body() dto: UniversalLoginDto) {
+    return this.auth.universalLogin(dto.identifier, dto.password, dto.school, loginContext(req), dto.remember === true);
   }
 }

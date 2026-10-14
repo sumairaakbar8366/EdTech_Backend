@@ -4,9 +4,10 @@ import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import type { Env } from '../config/env.js';
 import { RbacModule } from '../rbac/rbac.module.js';
-import { AuthController } from './auth.controller.js';
+import { AuthController, SocialSignInController, UniversalLoginController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
 import { AccessGuard, AuthGuard } from './guards.js';
+import { SocialIdentityService } from './social-identity.service.js';
 import { PasswordService } from './password.service.js';
 import { LoginEventsService } from './login-events.service.js';
 import { LoginTicketService } from './login-ticket.service.js';
@@ -31,7 +32,7 @@ import { VerificationCodesService } from './verification-codes.service.js';
       }),
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, SocialSignInController, UniversalLoginController],
   providers: [
     AuthService,
     PasswordService,
@@ -40,10 +41,11 @@ import { VerificationCodesService } from './verification-codes.service.js';
     PasswordResetService,
     LoginTicketService,
     LoginEventsService,
+    SocialIdentityService,
     // Order matters: authenticate first, then authorize.
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: AccessGuard },
   ],
-  exports: [PasswordService, AuthService, VerificationCodesService, LoginTicketService, LoginEventsService],
+  exports: [PasswordService, AuthService, VerificationCodesService, LoginTicketService, LoginEventsService, SocialIdentityService],
 })
 export class AuthModule {}

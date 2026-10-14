@@ -116,9 +116,9 @@ export const TEMPLATES = {
   }),
 
   /** A new login. The temporary password is included only when the address was verified by OTP. */
-  account_created: define<{ schoolName: string; name: string; loginId: string; signInUrl: string; temporaryPassword?: string }>({
+  account_created: define<{ schoolName: string; name: string; loginId: string; signInUrl: string; temporaryPassword?: string; google?: boolean }>({
     channels: EMAIL,
-    render: ({ schoolName, name, loginId, signInUrl, temporaryPassword }) => {
+    render: ({ schoolName, name, loginId, signInUrl, temporaryPassword, google }) => {
       const p = [
         `Assalam o Alaikum ${name},`,
         `Your ${schoolName} account is ready. Sign in with this email address and the password below.`,
@@ -126,6 +126,7 @@ export const TEMPLATES = {
         temporaryPassword
           ? `Temporary password: ${temporaryPassword}  (you will choose your own password at first sign-in)`
           : 'Your school will give you a temporary password. You will choose your own password at first sign-in.',
+        ...(google ? ['Or simply use "Continue with Google" on the sign-in page with this email address.'] : []),
         'Your User ID never changes; keep it for the school office.',
       ];
       return {
@@ -137,24 +138,27 @@ export const TEMPLATES = {
   }),
 
   /** Self-service sign-up finished: the school is live on a free trial. */
-  school_signup_welcome: define<{ name: string; schoolName: string; loginId: string; signInUrl: string; trialEndsAt: string }>({
+  school_signup_welcome: define<{ name: string; schoolName: string; loginId: string; signInUrl: string; trialEndsAt: string; password?: string; provider?: string }>({
     channels: EMAIL,
-    render: ({ name, schoolName, loginId, signInUrl, trialEndsAt }) => {
+    render: ({ name, schoolName, loginId, signInUrl, trialEndsAt, password, provider }) => {
       const p = [
         `Welcome ${name},`,
         `${schoolName} is ready on SchoolERP. Your free trial includes every feature until ${fmtDate(trialEndsAt)}.`,
-        `Sign in with this email and the password you chose. Your User ID: ${loginId}`,
-        'Next: add your classes, staff and students; each person gets their own User ID.',
+        password
+          ? `Your sign-in details. User ID: ${loginId} · Password: ${password}. Please change the password after you sign in (Profile → Change password).`
+          : `Sign in with this email and the password you chose. Your User ID: ${loginId}`,
+        ...(provider ? [`You can also sign in any time with "Continue with ${provider}" using the same account.`] : []),
+        'Next: add your classes, staff and students; each person gets their own User ID and sign-in details by email.',
       ];
       return { subject: `${schoolName} is ready: your User ID is ${loginId}`, text: `${p.join('\n\n')}\n\nSign in: ${signInUrl}`, html: emailLayout({ heading: 'Your school is ready', paragraphs: p, action: { label: 'Open your school', url: signInUrl } }) };
     },
   }),
 
   /** To the platform owner: someone signed up. */
-  owner_new_signup: define<{ schoolName: string; slug: string; contact: string; email: string; phone: string; city: string | null; trialEndsAt: string; consoleUrl: string }>({
+  owner_new_signup: define<{ schoolName: string; slug: string; contact: string; email: string; phone: string | null; city: string | null; trialEndsAt: string; consoleUrl: string; method?: string }>({
     channels: EMAIL,
     render: (d) => {
-      const p = [`${d.schoolName} (${d.slug}) signed up and started a free trial until ${fmtDate(d.trialEndsAt)}.`, `Contact: ${d.contact}`, `Email: ${d.email}`, `Phone: ${d.phone}`, ...(d.city ? [`City: ${d.city}`] : [])];
+      const p = [`${d.schoolName} (${d.slug}) signed up and started a free trial until ${fmtDate(d.trialEndsAt)}.`, `Contact: ${d.contact}`, `Email: ${d.email}`, ...(d.phone ? [`Phone: ${d.phone}`] : []), ...(d.city ? [`City: ${d.city}`] : []), ...(d.method ? [`Signed up with: ${d.method}`] : [])];
       return { subject: `New sign-up: ${d.schoolName}`, text: `${p.join('\n')}\n\n${d.consoleUrl}`, html: emailLayout({ heading: 'New school sign-up', paragraphs: p, action: { label: 'Open the console', url: d.consoleUrl } }) };
     },
   }),

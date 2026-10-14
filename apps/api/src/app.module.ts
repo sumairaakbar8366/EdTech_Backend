@@ -92,6 +92,13 @@ export class AppModule implements NestModule {
         { path: 'public/signup', method: RequestMethod.POST },
         { path: 'public/signup/code', method: RequestMethod.POST },
         { path: 'public/signup/slug', method: RequestMethod.GET },
+        { path: 'public/signup/quick', method: RequestMethod.POST },
+        // Sign-up / sign-in options (Google, email check): the same on every host.
+        { path: 'public/signup/config', method: RequestMethod.GET },
+        // "Continue with Google" for a school, completed on the main site.
+        { path: 'public/social/ticket', method: RequestMethod.POST },
+        // The main domain's single /login (owner and every school).
+        { path: 'public/login', method: RequestMethod.POST },
         // The payment gateway's checkout page (sandbox) and webhooks: no tenant.
         { path: 'public/pay/:token', method: RequestMethod.GET },
         { path: 'public/pay/:token/complete', method: RequestMethod.POST },

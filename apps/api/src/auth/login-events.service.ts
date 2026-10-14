@@ -14,7 +14,7 @@ export interface LoginEventInput extends LoginContext {
   loginId?: string | null;
   name?: string | null;
   roles?: string[] | null;
-  method?: 'password' | 'ticket' | 'support';
+  method?: 'password' | 'ticket' | 'support' | 'google';
   success: boolean;
   reason?: string | null;
 }

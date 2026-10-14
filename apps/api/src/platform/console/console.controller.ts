@@ -25,6 +25,12 @@ class PeopleQuery {
 }
 
 
+class LoginsQuery {
+  @IsOptional() @IsString() @MaxLength(100) q?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) pageSize = 50;
+}
+
 class SetSubscriptionDto {
   @IsString() @MaxLength(40) tierCode: string;
   @IsIn(['trialing', 'active']) status: 'trialing' | 'active';
@@ -58,6 +64,12 @@ export class ConsoleController {
     return this.console.people(q.type, q);
   }
 
+
+  /** Every User ID of one school: who it belongs to, roles, email, status, last sign-in. */
+  @Get('console/schools/:id/logins')
+  logins(@Param('id', ParseUUIDPipe) id: string, @Query() q: LoginsQuery) {
+    return this.console.logins(id, q);
+  }
 
   @Get('console/finance')
   finance() {

@@ -85,7 +85,8 @@ export class WebsiteService {
     if (!mimeType) throw new BadRequestException('Only JPG and PNG photos are allowed');
     const db = this.prisma.forSchool(schoolId);
     if ((await db.websiteMedia.count()) >= 200) throw new BadRequestException('The gallery holds up to 200 photos; remove some first');
-    const storageKey = `${schoolId}/website/${randomUUID()}`;
+    // Same key shape as every other upload: StorageService accepts only "<schoolId>/<uuid>".
+    const storageKey = `${schoolId}/${randomUUID()}`;
     await this.storage.put(storageKey, file.buffer);
     try {
       return await db.websiteMedia.create({
@@ -111,7 +112,10 @@ export class WebsiteService {
 
   /** Everything the public site shows, generated from the school's own data. */
   async site(schoolId: string) {
-    const theme = (await this.plan.get(schoolId)).features.includes('theme');
+    const state = await this.plan.get(schoolId);
+    const theme = state.features.includes('theme');
+    // Richer website imagery on the higher plans; the plan itself is not published.
+    const siteTier = !state.locked && ['scale', 'enterprise'].includes(state.tier?.code ?? '') ? 'premium' : 'standard';
     return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const today = new Date(new Date().toISOString().slice(0, 10));
       const [school, settings, website, campuses, classes, years, students, teachers, jobs, media] = await Promise.all([
@@ -135,7 +139,7 @@ export class WebsiteService {
       const last = classes[classes.length - 1]?.name;
       const generatedAbout = `${school.name} is a ${campuses.length > 1 ? `${campuses.length}-campus ` : ''}school offering ${first && last && first !== last ? `classes from ${first} to ${last}` : 'primary and secondary education'}, with ${teachers} dedicated teachers and ${students} students. We focus on strong academics, good character and close partnership with parents.`;
       return {
-        school: { name: school.name, slug: school.slug, logoUrl: settings?.logoUrl ?? null, primaryColor: theme ? settings?.primaryColor ?? null : null },
+        school: { name: school.name, slug: school.slug, logoUrl: settings?.logoUrl ?? null, primaryColor: theme ? settings?.primaryColor ?? null : null, siteTier },
         published: w?.published ?? true,
         tagline: w?.tagline ?? 'Learning today, leading tomorrow',
         about: w?.about ?? generatedAbout,
