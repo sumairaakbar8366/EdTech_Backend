@@ -386,4 +386,21 @@ export class ConsoleService {
     this.state.invalidate(schoolId);
     return this.state.get(schoolId);
   }
+
+  // --- Owner notifications ----------------------------------------------------------------------
+
+  async notifications(q: { show: 'all' | 'unread'; page: number; pageSize: number }) {
+    const where = q.show === 'unread' ? { readAt: null } : {};
+    const [items, total, unread] = await Promise.all([
+      this.prisma.platformNotification.findMany({ where, orderBy: { createdAt: 'desc' }, skip: (q.page - 1) * q.pageSize, take: q.pageSize }),
+      this.prisma.platformNotification.count({ where }),
+      this.prisma.platformNotification.count({ where: { readAt: null } }),
+    ]);
+    return { items, total, unread, page: q.page, pageSize: q.pageSize };
+  }
+
+  async markNotificationsRead(ids?: string[]) {
+    await this.prisma.platformNotification.updateMany({ where: { readAt: null, ...(ids?.length && { id: { in: ids } }) }, data: { readAt: new Date() } });
+  }
+
 }

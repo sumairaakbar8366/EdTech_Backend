@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
@@ -8,6 +9,10 @@ import helmet from 'helmet';
 import { AppModule } from './app.module.js';
 import { pathTenantMiddleware } from './tenancy/path-tenant.js';
 import type { Env } from './config/env.js';
+
+// Node gives each resolved address only 250 ms before trying the next; from this host Google's
+// IPv4 connect takes ~300 ms and IPv6 has no route, so outbound calls (Google sign-in) failed.
+setDefaultAutoSelectFamilyAttemptTimeout(2000);
 
 async function bootstrap() {
   // rawBody: payment gateway webhooks are verified against the exact bytes they signed.

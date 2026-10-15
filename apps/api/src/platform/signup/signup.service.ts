@@ -7,6 +7,7 @@ import { SocialIdentityService } from '../../auth/social-identity.service.js';
 import { LoginTicketService } from '../../auth/login-ticket.service.js';
 import { VerificationCodesService } from '../../auth/verification-codes.service.js';
 import { DeliveryService } from '../../delivery/delivery.service.js';
+import { OwnerAlertsService } from '../../delivery/owner-alerts.service.js';
 import { WebUrls } from '../../delivery/web-urls.service.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { SchoolProvisioningService } from '../schools/school-provisioning.service.js';
@@ -64,6 +65,7 @@ export class SignupService {
     private readonly delivery: DeliveryService,
     private readonly urls: WebUrls,
     private readonly social: SocialIdentityService,
+    private readonly alerts: OwnerAlertsService,
     config: ConfigService<Env, true>,
   ) {
     this.verificationOff = config.get('EMAIL_VERIFICATION', { infer: true }) === 'off';
@@ -109,6 +111,11 @@ export class SignupService {
     if (dto.credential) {
       if (!dto.provider || !dto.nonce) throw new BadRequestException('Continue with Google again.');
       who = await this.social.verify(dto.provider, dto.credential, dto.nonce);
+      // Google proves the account is real; the emailed code proves this person can read its inbox.
+      if (!this.verificationOff) {
+        if (!(dto.verificationId && dto.code)) throw new BadRequestException('Enter the 6-digit code we emailed you.');
+        await this.codes.verify(dto.verificationId, `signup:${who.email}`, dto.code);
+      }
       method = dto.provider;
     } else {
       if (!dto.email) throw new BadRequestException('Enter your email, or continue with Google.');
@@ -193,20 +200,19 @@ export class SignupService {
   }
 
   private async notifyOwners(dto: NewSchool, schoolId: string, trialEndsAt: Date) {
-    try {
-      const owners = await this.prisma.platformAdmin.findMany({ where: { isActive: true }, select: { email: true } });
-      for (const o of owners) {
-        await this.delivery.trySend({
-          channel: 'email',
-          to: o.email,
-          template: 'owner_new_signup',
-          schoolId,
-          data: { schoolName: dto.schoolName, slug: dto.slug, contact: `${dto.firstName} ${dto.lastName} (${dto.designation})`, email: dto.email, phone: dto.phone, city: dto.city, trialEndsAt: trialEndsAt.toISOString(), consoleUrl: this.urls.platform('/schools'), method: { form: 'full form', email: 'email', google: 'Google' }[dto.method] },
-        });
-      }
-    } catch (e) {
-      this.log.error(`owner notification failed: ${(e as Error).message}`);
-    }
+    const method = { form: 'full form', email: 'email', google: 'Google' }[dto.method];
+    await this.alerts.raise({
+      kind: 'school_signup',
+      title: `New sign-up: ${dto.schoolName}`,
+      body: `${dto.firstName} ${dto.lastName} (${dto.email}) started a free trial with ${method}.`,
+      link: `/schools/${schoolId}`,
+      schoolId,
+      actor: dto.email,
+      email: {
+        template: 'owner_new_signup',
+        data: { schoolName: dto.schoolName, slug: dto.slug, contact: `${dto.firstName} ${dto.lastName} (${dto.designation})`, email: dto.email, phone: dto.phone, city: dto.city, trialEndsAt: trialEndsAt.toISOString(), consoleUrl: this.urls.platform(`/schools/${schoolId}`), method },
+      },
+    });
   }
 
   private async trialTier(): Promise<string> {

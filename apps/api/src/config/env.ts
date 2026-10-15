@@ -188,6 +188,9 @@ export function validateEnv(config: Record<string, unknown>): Env {
   if (env.NODE_ENV === 'production' && env.EMAIL_VERIFICATION === 'off') {
     throw new Error('Invalid environment configuration:\n  EMAIL_VERIFICATION=off is for testing only and cannot be used in production');
   }
+  if (env.NODE_ENV === 'production' && env.EMAIL_DRIVER !== 'smtp') {
+    throw new Error('Invalid environment configuration:\n  EMAIL_DRIVER=smtp is required in production: sign-up codes, reset links and new passwords must reach people');
+  }
   if (env.NODE_ENV === 'production' && !env.PAYMENT_WEBHOOK_SECRET) {
     throw new Error('Invalid environment configuration:\n  PAYMENT_WEBHOOK_SECRET is required in production');
   }

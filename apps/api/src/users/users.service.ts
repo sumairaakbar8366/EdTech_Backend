@@ -5,6 +5,7 @@ import { AuthService } from '../auth/auth.service.js';
 import { PasswordService } from '../auth/password.service.js';
 import { VerificationCodesService } from '../auth/verification-codes.service.js';
 import { DeliveryService } from '../delivery/delivery.service.js';
+import { WebUrls } from '../delivery/web-urls.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
 import type { CandidatesQuery, EmailProofDto, GrantAccessDto, ListUsersQuery, PersonType, SetEmailDto } from './users.dto.js';
@@ -59,6 +60,7 @@ export class UsersService {
     private readonly auth: AuthService,
     private readonly codes: VerificationCodesService,
     private readonly delivery: DeliveryService,
+    private readonly urls: WebUrls,
   ) {}
 
   async list(schoolId: string, q: ListUsersQuery) {
@@ -204,10 +206,15 @@ export class UsersService {
     const password = temporaryPassword();
     await db.user.update({ where: { id }, data: { passwordHash: await this.passwords.hash(password), mustChangePassword: true } });
     await this.auth.endSessions(schoolId, id);
-    if (user.email && user.emailVerifiedAt) {
-      await this.delivery.trySend({ channel: 'email', to: user.email, template: 'password_changed', schoolId, data: { name: user.firstName, loginId: user.loginId, byAdmin: true } });
+    // The new sign-in details go straight to the person, so the admin does not have to pass them on.
+    let emailedTo: string | null = null;
+    if (user.email) {
+      const school = await this.prisma.school.findUniqueOrThrow({ where: { id: schoolId }, select: { name: true, slug: true } });
+      await this.delivery
+        .send({ channel: 'email', to: user.email, template: 'credentials_reset', schoolId, data: { name: user.firstName, loginId: user.loginId, email: user.email, temporaryPassword: password, signInUrl: this.urls.school(school.slug, '/login'), schoolName: school.name } })
+        .then(() => (emailedTo = user.email), () => undefined);
     }
-    return { user: await this.one(schoolId, id), temporaryPassword: password };
+    return { user: await this.one(schoolId, id), temporaryPassword: password, emailedTo };
   }
 
   async setStatus(schoolId: string, actorId: string, id: string, status: 'active' | 'disabled') {

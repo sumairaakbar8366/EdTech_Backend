@@ -209,6 +209,44 @@ export const TEMPLATES = {
       return { subject: 'Your SchoolERP password was changed', text: p.join('\n\n'), html: emailLayout({ heading: 'Password changed', paragraphs: p }) };
     },
   }),
+
+  /** An administrator (or the platform owner) reset someone's password: their new sign-in details. */
+  credentials_reset: define<{ name: string; loginId: string; email?: string | null; temporaryPassword: string; signInUrl: string; schoolName: string; byOwner?: boolean }>({
+    channels: EMAIL,
+    render: (d) => {
+      const p = [
+        `Hello ${d.name},`,
+        `${d.byOwner ? 'SchoolERP support' : `An administrator at ${d.schoolName}`} reset your password. Your new sign-in details:`,
+        ...(d.email ? [`Email: ${d.email}`] : []),
+        `User ID: ${d.loginId}`,
+        `Temporary password: ${d.temporaryPassword}`,
+        'You will choose your own password right after you sign in. All your other sessions were signed out.',
+        'If you did not ask for this, contact your school administrator.',
+      ];
+      return { subject: `Your new ${d.schoolName} sign-in details`, text: `${p.join('\n\n')}\n\n${d.signInUrl}`, html: emailLayout({ heading: 'Your password was reset', paragraphs: p, action: { label: 'Sign in', url: d.signInUrl } }) };
+    },
+  }),
+
+  /** User IDs became unique across the platform; this person's ID was renumbered. */
+  login_id_changed: define<{ name: string; schoolName: string; oldLoginId: string; newLoginId: string; signInUrl: string }>({
+    channels: EMAIL,
+    render: (d) => {
+      const p = [
+        `Hello ${d.name},`,
+        `Your ${d.schoolName} User ID has changed: every User ID on SchoolERP is now unique.`,
+        `Old User ID: ${d.oldLoginId}`,
+        `New User ID: ${d.newLoginId}`,
+        'Your password stays the same. If you sign in with your email, nothing changes for you.',
+      ];
+      return { subject: `Your new ${d.schoolName} User ID: ${d.newLoginId}`, text: `${p.join('\n\n')}\n\n${d.signInUrl}`, html: emailLayout({ heading: 'Your User ID has changed', paragraphs: p, action: { label: 'Sign in', url: d.signInUrl } }) };
+    },
+  }),
+
+  /** Owner console alert mirrored to email (new applications and other requests). */
+  owner_alert: define<{ title: string; lines: string[]; url: string }>({
+    channels: EMAIL,
+    render: (d) => ({ subject: d.title, text: `${d.lines.join('\n')}\n\n${d.url}`, html: emailLayout({ heading: d.title, paragraphs: d.lines, action: { label: 'Open the console', url: d.url } }) }),
+  }),
 };
 
 export type TemplateName = keyof typeof TEMPLATES;

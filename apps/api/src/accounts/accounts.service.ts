@@ -83,14 +83,17 @@ export class AccountsService {
   private readonly google: boolean;
 
   /**
-   * The next User ID for a prefix and year, e.g. TCH-2026-0008. Takes a transaction lock per prefix
-   * and year (held until commit), so two logins created at once never get the same number. The
-   * caller creates the user and then records the ID with `recordLoginId`.
+   * The next User ID for a prefix and year, e.g. TCH-2026-0008: one counter for every school, so a
+   * User ID is unique on the whole platform. The counter row stays locked until commit, so two
+   * logins created at once never get the same number. The caller creates the user and then records
+   * the ID with `recordLoginId`.
    */
-  async nextLoginId(tx: TenantTx, schoolId: string, prefix: string, year: number) {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`login-id:${schoolId}:${prefix}:${year}`}, 0))`;
-    const last = await tx.loginId.findFirst({ where: { prefix, year }, orderBy: { seq: 'desc' }, select: { seq: true } });
-    const seq = (last?.seq ?? 0) + 1;
+  async nextLoginId(tx: TenantTx, _schoolId: string, prefix: string, year: number) {
+    const [row] = await tx.$queryRaw<{ last_seq: number }[]>`
+      INSERT INTO login_id_counters (prefix, year, last_seq) VALUES (${prefix}, ${year}, 1)
+      ON CONFLICT (prefix, year) DO UPDATE SET last_seq = login_id_counters.last_seq + 1
+      RETURNING last_seq`;
+    const seq = row!.last_seq;
     return { loginId: formatLoginId(prefix, year, seq), prefix, year, seq };
   }
 

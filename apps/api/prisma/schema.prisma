@@ -35,6 +35,27 @@ model PlatformAdmin {
   @@map("platform_admins")
 }
 
+/// Owner console notifications: sign-ups, applications, payments and account requests
+/// (forgotten passwords / User IDs) across every school, newest first, read or unread.
+model PlatformNotification {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  /// school_signup, school_application, payment_received, password_reset_request, user_id_request, password_reset_done
+  kind      String
+  title     String
+  body      String?
+  /// Console path, e.g. "/schools/<id>".
+  link      String?
+  schoolId  String?   @map("school_id") @db.Uuid
+  /// Who made the request (email or User ID as typed).
+  actor     String?
+  readAt    DateTime? @map("read_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([createdAt(sort: Desc)])
+  @@index([readAt])
+  @@map("platform_notifications")
+}
+
 enum PricingModel {
   flat
   per_campus
@@ -377,7 +398,8 @@ model User {
   id                 String     @id @default(uuid(7)) @db.Uuid
   schoolId           String     @map("school_id") @db.Uuid
   /// Structured sign-in ID, e.g. "TCH-2026-0007". Issued once from login_ids; a trigger refuses changes.
-  loginId            String     @map("login_id")
+  /// Unique on the whole platform (one counter per prefix and year for every school).
+  loginId            String     @unique(map: "users_login_id_key") @map("login_id")
   /// Personal email, stored lowercased. Not unique: a young student may share a parent's address.
   email              String?
   emailVerifiedAt    DateTime?  @map("email_verified_at") @db.Timestamptz(3)
@@ -2917,7 +2939,7 @@ model OutboundMessage {
 model LoginId {
   id       String   @id @default(uuid(7)) @db.Uuid
   schoolId String   @map("school_id") @db.Uuid
-  loginId  String   @map("login_id")
+  loginId  String   @unique(map: "login_ids_login_id_key") @map("login_id")
   /// ADM, ACC, TCH, STF, PAR, STU
   prefix   String
   /// Joining / admission year.
@@ -2933,6 +2955,28 @@ model LoginId {
   @@unique([schoolId, loginId])
   @@unique([schoolId, prefix, year, seq])
   @@map("login_ids")
+}
+
+/// The last User ID number issued per prefix and year, shared by every school.
+model LoginIdCounter {
+  prefix  String
+  year    Int
+  lastSeq Int    @map("last_seq")
+
+  @@id([prefix, year])
+  @@map("login_id_counters")
+}
+
+/// User IDs renumbered when IDs became platform-wide (2026-10-15), so people can be told.
+model LoginIdRename {
+  userId     String    @id @map("user_id") @db.Uuid
+  schoolId   String    @map("school_id") @db.Uuid
+  oldLoginId String    @map("old_login_id")
+  newLoginId String    @map("new_login_id")
+  notifiedAt DateTime? @map("notified_at") @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("login_id_renames")
 }
 
 // --- Role tables (2026-10-12): one table per kind of person ---------------------------------------

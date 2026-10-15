@@ -23,6 +23,7 @@
     "db:seed": "nest build && node dist/cli/seed.js",
     "db:seed:demo-attendance": "nest build && node dist/cli/demo-attendance.js",
     "reset-platform-password": "nest build && node dist/cli/reset-platform-password.js",
+    "notify-login-id-renames": "nest build && node dist/cli/notify-login-id-renames.js",
     "postinstall": "prisma generate"
   },
   "devDependencies": {

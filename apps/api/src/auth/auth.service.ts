@@ -4,7 +4,9 @@ import { JwtService } from '@nestjs/jwt';
 import type { Env } from '../config/env.js';
 import { normaliseLoginId } from '../accounts/accounts.service.js';
 import type { AuthContext, TenantContext } from '../common/request-context.js';
+import { NotificationsService } from '../communication/notifications.service.js';
 import { DeliveryService } from '../delivery/delivery.service.js';
+import { OwnerAlertsService } from '../delivery/owner-alerts.service.js';
 import { WebUrls } from '../delivery/web-urls.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PermissionService } from '../rbac/permission.service.js';
@@ -39,6 +41,8 @@ type SignInCandidate = { kind: 'platform'; adminId: string; name: string } | { k
 
 /** Where a main-site sign-in continues: straight into one account, or a choice of schools. */
 export type SignInOutcome = { continueUrl: string } | { choose: { school: string; name: string }[] };
+/** Google sign-in on the main site with no account yet: the person is offered the free trial instead. */
+export type SocialSignInOutcome = SignInOutcome | { noAccount: { email: string } };
 
 @Injectable()
 export class AuthService {
@@ -61,6 +65,8 @@ export class AuthService {
     private readonly delivery: DeliveryService,
     private readonly urls: WebUrls,
     private readonly social: SocialIdentityService,
+    private readonly alerts: OwnerAlertsService,
+    private readonly notifications: NotificationsService,
     config: ConfigService<Env, true>,
   ) {
     this.accessTtl = config.get('JWT_ACCESS_TTL_SECONDS', { infer: true });
@@ -135,17 +141,19 @@ export class AuthService {
    * school; one match continues, several are returned to choose from. Within a school the email
    * must belong to exactly one person (a young student may share a parent's address).
    */
-  async providerTicket(slug: string | undefined, provider: SocialProvider, credential: string, nonce: string, ctx: LoginContext = {}): Promise<SignInOutcome> {
+  async providerTicket(slug: string | undefined, provider: SocialProvider, credential: string, nonce: string, ctx: LoginContext = {}): Promise<SocialSignInOutcome> {
     const who = await this.social.verify(provider, credential, nonce);
     const found = await this.findInSchools(slug, (db) => db.user.findMany({ where: { email: who.email, status: 'active' }, select: { id: true, emailVerifiedAt: true }, take: 2 }));
     const shared = found.filter((f) => f.user.length > 1);
     const candidates: SignInCandidate[] = found.filter((f) => f.user.length === 1).map((f) => ({ kind: 'school', school: f.school, userId: f.user[0]!.id }));
     if (!candidates.length) {
       await this.events.record({ ...ctx, schoolId: found[0]?.school.id, identifier: who.email, method: provider, success: false, reason: shared.length ? 'email shared by several accounts' : 'unknown account' });
+      // A new visitor on the main site: no error, they go on to start a free trial (with an emailed code).
+      if (!slug && !shared.length) return { noAccount: { email: who.email } };
       throw new UnauthorizedException(
         shared.length
           ? 'Several accounts at your school use this email. Sign in with your User ID and password.'
-          : `No school account uses this Google email (${who.email}). Ask your school office to add it, or sign in with your email or User ID.`,
+          : `This school has no account with ${who.email}. Ask the school office to add this email, or sign in with your User ID.`,
       );
     }
     // Google has verified the address, which is what the email check would prove.
@@ -275,23 +283,37 @@ export class AuthService {
   // --- Forgotten password / User ID ----------------------------------------------------------
 
   /**
-   * Emails a reset link to the account's verified email. Always answers the same way, so it cannot
-   * be used to find out which User IDs or emails exist.
+   * Emails a reset link to the account's email (verified, or any email while EMAIL_VERIFICATION=off).
+   * Always answers the same way, so it cannot be used to find out which User IDs or emails exist.
+   * The owner console lists every request with its outcome; when no link could be sent, the school's
+   * admins are told in-app so they can reset the password (which emails the new details).
    */
   async forgotPassword(tenant: TenantContext, identifier: string): Promise<void> {
+    const typed = identifier.trim();
     try {
       if (tenant.kind === 'platform') {
-        const admin = await this.prisma.platformAdmin.findUnique({ where: { email: identifier.trim().toLowerCase() } });
-        if (!admin?.isActive) return;
+        const admin = await this.prisma.platformAdmin.findUnique({ where: { email: typed.toLowerCase() } });
+        if (!admin?.isActive) return void (await this.alerts.raise({ kind: 'password_reset_request', title: 'Console password reset: no such owner', body: `Someone asked to reset the owner password of "${typed}", which is not an active owner account. Nothing was sent.`, actor: typed }));
         const token = await this.resets.create({ scope: 'platform', adminId: admin.id });
         await this.delivery.send({ channel: 'email', to: admin.email, template: 'password_reset', data: { name: admin.name, url: this.urls.platform(`/reset-password?token=${token}`), minutes: RESET_TTL_MINUTES } });
+        await this.alerts.raise({ kind: 'password_reset_request', title: `Console password reset: ${admin.name}`, body: `A reset link was emailed to ${admin.email}.`, actor: admin.email });
         return;
       }
-      const user = await this.prisma.forSchool(tenant.schoolId).user.findFirst({
-        where: identifier.includes('@') ? { email: identifier.trim().toLowerCase() } : { loginId: normaliseLoginId(identifier) },
-        select: { id: true, status: true, email: true, emailVerifiedAt: true, firstName: true, loginId: true },
+      const db = this.prisma.forSchool(tenant.schoolId);
+      const user = await db.user.findFirst({
+        where: typed.includes('@') ? { email: typed.toLowerCase() } : { loginId: normaliseLoginId(typed) },
+        select: { id: true, status: true, email: true, emailVerifiedAt: true, firstName: true, lastName: true, loginId: true },
       });
-      if (!user || user.status !== 'active' || !user.email || !user.emailVerifiedAt) return;
+      const who = user ? `${user.firstName} ${user.lastName} (${user.loginId})` : `"${typed}"`;
+      const alert = (body: string) =>
+        this.alerts.raise({ kind: 'password_reset_request', title: `Password reset request · ${tenant.name}`, body: `${who}: ${body}`, link: `/schools/${tenant.schoolId}`, schoolId: tenant.schoolId, actor: typed });
+      if (!user) return void (await alert('no account with this email or User ID. Nothing was sent.'));
+      if (user.status !== 'active') return void (await alert('this login is disabled. Nothing was sent.'));
+      if (!user.email || (!user.emailVerifiedAt && !this.emailCheckOff)) {
+        await alert(`${user.email ? 'their email is not confirmed' : 'no email on file'}, so no link could be sent. The school admin was asked to reset it.`);
+        await this.notifyAdminsOfRequest(tenant.schoolId, user.id, 'Password reset requested', `${who} forgot their password and has ${user.email ? 'no confirmed email' : 'no email'}. Reset it from Users: the new sign-in details are emailed to them${user.email ? '' : ' once they have an email (or hand them over yourself)'}.`);
+        return;
+      }
       const token = await this.resets.create({ scope: 'school', schoolId: tenant.schoolId, userId: user.id });
       await this.delivery.send({
         channel: 'email',
@@ -300,10 +322,20 @@ export class AuthService {
         schoolId: tenant.schoolId,
         data: { name: user.firstName, loginId: user.loginId, schoolName: tenant.name, url: this.urls.school(tenant.slug, `/reset-password?token=${token}`), minutes: RESET_TTL_MINUTES },
       });
+      await alert(`a reset link was emailed to ${user.email}.`);
     } catch (e) {
       // Same answer either way; the failure is only logged.
       this.log.error(`forgot-password failed: ${(e as Error).message}`);
     }
+  }
+
+  /** In-app (and email) notice to the school's admins about an account request they should handle. */
+  private async notifyAdminsOfRequest(schoolId: string, userId: string, title: string, body: string) {
+    const admins = await this.prisma.forSchool(schoolId).user.findMany({
+      where: { status: 'active', id: { not: userId }, NOT: { loginId: { startsWith: 'SUP-' } }, userRoles: { some: { role: { key: 'school_admin' } } } },
+      select: { id: true },
+    });
+    await this.notifications.notify(schoolId, admins.map((a) => a.id), { eventType: 'account_request', title, body, link: '/users' });
   }
 
   async checkResetToken(token: string) {
@@ -319,6 +351,7 @@ export class AuthService {
       const admin = await this.prisma.platformAdmin.update({ where: { id: subject.adminId }, data: { passwordHash: hash } });
       await this.refreshTokens.revokeAllFor({ scope: 'platform', sub: admin.id });
       await this.delivery.trySend({ channel: 'email', to: admin.email, template: 'password_changed', data: { name: admin.name, byAdmin: false } });
+      await this.alerts.raise({ kind: 'password_reset_done', title: `Console password changed: ${admin.name}`, body: `${admin.email} set a new password from a reset link.`, actor: admin.email });
       return;
     }
     if (tenant.kind !== 'school' || tenant.schoolId !== subject.schoolId) throw new BadRequestException('This reset link belongs to another school');
@@ -326,6 +359,7 @@ export class AuthService {
     const user = await db.user.update({ where: { id: subject.userId }, data: { passwordHash: hash, mustChangePassword: false }, select: { email: true, firstName: true, loginId: true } });
     await this.refreshTokens.revokeAllFor({ scope: 'school', sub: subject.userId, sid: subject.schoolId });
     if (user.email) await this.delivery.trySend({ channel: 'email', to: user.email, template: 'password_changed', schoolId: subject.schoolId, data: { name: user.firstName, loginId: user.loginId, byAdmin: false, schoolName: tenant.name } });
+    await this.alerts.raise({ kind: 'password_reset_done', title: `Password changed · ${tenant.name}`, body: `${user.firstName} (${user.loginId}) set a new password from a reset link.`, link: `/schools/${subject.schoolId}`, schoolId: subject.schoolId, actor: user.email ?? user.loginId });
   }
 
   /** Emails every User ID of this school whose verified email matches. Same answer either way. */
@@ -333,9 +367,17 @@ export class AuthService {
     if (tenant.kind !== 'school') throw new BadRequestException('User IDs belong to a school site');
     try {
       const users = await this.prisma.forSchool(tenant.schoolId).user.findMany({
-        where: { email, emailVerifiedAt: { not: null }, status: 'active' },
+        where: { email, ...(!this.emailCheckOff && { emailVerifiedAt: { not: null } }), status: 'active' },
         select: { loginId: true, firstName: true, lastName: true, userRoles: { select: { role: { select: { key: true } } } } },
         orderBy: { loginId: 'asc' },
+      });
+      await this.alerts.raise({
+        kind: 'user_id_request',
+        title: `User ID request · ${tenant.name}`,
+        body: users.length ? `${email} asked for their User ID; ${users.length} account(s) emailed: ${users.map((u) => u.loginId).join(', ')}.` : `${email} asked for their User ID, but no account here has this ${this.emailCheckOff ? '' : 'confirmed '}email. Nothing was sent.`,
+        link: `/schools/${tenant.schoolId}`,
+        schoolId: tenant.schoolId,
+        actor: email,
       });
       if (!users.length) return;
       await this.delivery.send({

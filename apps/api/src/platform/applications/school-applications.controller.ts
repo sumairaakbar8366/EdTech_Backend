@@ -1,12 +1,18 @@
 import { BadRequestException, Body, ConflictException, Controller, Get, NotFoundException, Param, ParseUUIDPipe, Patch, Post, UseGuards } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { PlatformOnly, Public } from '../../auth/decorators.js';
+import { OwnerAlertsService } from '../../delivery/owner-alerts.service.js';
+import { WebUrls } from '../../delivery/web-urls.service.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { CreateSchoolApplicationDto, ReviewSchoolApplicationDto } from './school-application.dto.js';
 
 @Controller()
 export class SchoolApplicationsController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly alerts: OwnerAlertsService,
+    private readonly urls: WebUrls,
+  ) {}
 
   @Post('public/school-applications')
   @Public()
@@ -28,10 +34,20 @@ export class SchoolApplicationsController {
     });
     if (open) throw new ConflictException('An application from this email is already under review');
 
-    return this.prisma.schoolApplication.create({
+    const created = await this.prisma.schoolApplication.create({
       data: dto,
       select: { id: true, status: true, createdAt: true },
     });
+    const lines = [`${dto.contactFirstName} ${dto.contactLastName} (${dto.designation}, ${dto.contactEmail}) applied for ${dto.schoolName}.`, ...(dto.contactPhone ? [`Phone: ${dto.contactPhone}`] : []), ...(dto.schoolCity ? [`City: ${dto.schoolCity}`] : [])];
+    await this.alerts.raise({
+      kind: 'school_application',
+      title: `New application: ${dto.schoolName}`,
+      body: lines.join(' '),
+      link: '/applications',
+      actor: dto.contactEmail,
+      email: { template: 'owner_alert', data: { title: `New school application: ${dto.schoolName}`, lines, url: this.urls.platform('/applications') } },
+    });
+    return created;
   }
 
   @Get('platform/school-applications')

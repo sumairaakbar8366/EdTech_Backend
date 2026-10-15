@@ -8,6 +8,7 @@ import { SubscriptionStateService } from '../billing/subscription-state.service.
 import { NotificationsService } from '../communication/notifications.service.js';
 import type { Env } from '../config/env.js';
 import { DeliveryService } from '../delivery/delivery.service.js';
+import { OwnerAlertsService } from '../delivery/owner-alerts.service.js';
 import { WebUrls } from '../delivery/web-urls.service.js';
 import { SchedulerService } from '../jobs/scheduler.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -43,6 +44,7 @@ export class PaymentsService implements OnModuleInit {
     private readonly delivery: DeliveryService,
     private readonly urls: WebUrls,
     private readonly scheduler: SchedulerService,
+    private readonly alerts: OwnerAlertsService,
     config: ConfigService<Env, true>,
   ) {
     // Development falls back to a key derived from the JWT secret; production must set its own.
@@ -200,10 +202,15 @@ export class PaymentsService implements OnModuleInit {
         });
       }
       if (paid) {
-        const owners = await this.prisma.platformAdmin.findMany({ where: { isActive: true }, select: { email: true } });
-        for (const o of owners) {
-          await this.delivery.trySend({ channel: 'email', to: o.email, template: 'owner_payment_received', data: { schoolName: school.name, plan: (p.tier?.name ?? 'Own domain'), cycle: p.billingCycle, amount: p.amount.toFixed(2), method, txnId: p.providerTxnId ?? '', consoleUrl: this.urls.platform('/payments') } });
-        }
+        const plan = p.tier?.name ?? 'Own domain';
+        await this.alerts.raise({
+          kind: 'payment_received',
+          title: `Payment received: ${school.name}`,
+          body: `PKR ${p.amount.toFixed(2)} for ${plan} (${p.billingCycle}) by ${method}.`,
+          link: '/payments',
+          schoolId: p.schoolId,
+          email: { template: 'owner_payment_received', data: { schoolName: school.name, plan, cycle: p.billingCycle, amount: p.amount.toFixed(2), method, txnId: p.providerTxnId ?? '', consoleUrl: this.urls.platform('/payments') } },
+        });
       }
     } catch (e) {
       this.log.error(`payment notices failed: ${(e as Error).message}`);

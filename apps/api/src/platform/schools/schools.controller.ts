@@ -4,6 +4,8 @@ import { temporaryPassword } from '../../accounts/accounts.service.js';
 import { AuthService } from '../../auth/auth.service.js';
 import { PasswordService } from '../../auth/password.service.js';
 import { PlatformOnly } from '../../auth/decorators.js';
+import { DeliveryService } from '../../delivery/delivery.service.js';
+import { WebUrls } from '../../delivery/web-urls.service.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { TenantResolverService } from '../../tenancy/tenant-resolver.service.js';
 import { CreateSchoolDto, UpdateSchoolStatusDto } from './create-school.dto.js';
@@ -19,6 +21,8 @@ export class SchoolsController {
     private readonly resolver: TenantResolverService,
     private readonly passwords: PasswordService,
     private readonly auth: AuthService,
+    private readonly delivery: DeliveryService,
+    private readonly urls: WebUrls,
   ) {}
 
   /** The school's admins (for "reset admin password"). */
@@ -34,8 +38,8 @@ export class SchoolsController {
   }
 
   /**
-   * Account recovery for a school admin who is locked out: a new temporary password (shown once)
-   * that must be changed at sign-in; all their sessions end.
+   * Account recovery for a school admin who is locked out: a new temporary password (shown once,
+   * and emailed to the admin) that must be changed at sign-in; all their sessions end.
    */
   @Post(':id/admins/:userId/reset-password')
   @HttpCode(HttpStatus.OK)
@@ -50,7 +54,18 @@ export class SchoolsController {
       return u;
     });
     await this.auth.endSessions(id, user.id);
-    return { user, temporaryPassword: password };
+    let emailedTo: string | null = null;
+    if (user.email) {
+      const school = await this.prisma.school.findUniqueOrThrow({ where: { id }, select: { name: true, slug: true } });
+      await this.delivery.send({
+        channel: 'email',
+        to: user.email,
+        schoolId: id,
+        template: 'credentials_reset',
+        data: { name: user.firstName, loginId: user.loginId, email: user.email, temporaryPassword: password, signInUrl: this.urls.school(school.slug, '/login'), schoolName: school.name, byOwner: true },
+      }).then(() => (emailedTo = user.email), () => undefined);
+    }
+    return { user, temporaryPassword: password, emailedTo };
   }
 
   @Get()

@@ -111,7 +111,7 @@ export class AuthController {
   @HttpCode(HttpStatus.ACCEPTED)
   async forgotPassword(@Req() req: AppRequest, @Body() dto: ForgotPasswordDto) {
     await this.auth.forgotPassword(req.tenant!, dto.identifier);
-    return { message: 'If that account exists and has a verified email, a reset link is on its way.' };
+    return { message: 'If that account exists, a reset link is on its way to its email. No email on file? Your school admin has been told and can reset it for you.' };
   }
 
   @Public()

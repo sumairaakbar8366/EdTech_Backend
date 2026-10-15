@@ -15,3 +15,6 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 .work/
+
+# Database dumps (real user data): never commit
+backups/

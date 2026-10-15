@@ -31,6 +31,17 @@ class LoginsQuery {
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(200) pageSize = 50;
 }
 
+class NotificationsQuery {
+  @IsOptional() @IsIn(['all', 'unread']) show: 'all' | 'unread' = 'all';
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize = 30;
+}
+
+class MarkReadDto {
+  /** Notification ids; omitted = all. */
+  @IsOptional() @IsUUID('all', { each: true }) ids?: string[];
+}
+
 class SetSubscriptionDto {
   @IsString() @MaxLength(40) tierCode: string;
   @IsIn(['trialing', 'active']) status: 'trialing' | 'active';
@@ -43,6 +54,18 @@ class SetSubscriptionDto {
 @Controller('platform')
 export class ConsoleController {
   constructor(private readonly console: ConsoleService) {}
+
+  /** The owner's notifications: sign-ups, applications, payments and account requests. */
+  @Get('console/notifications')
+  notifications(@Query() q: NotificationsQuery) {
+    return this.console.notifications(q);
+  }
+
+  @Post('console/notifications/read')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async markRead(@Body() dto: MarkReadDto): Promise<void> {
+    await this.console.markNotificationsRead(dto.ids);
+  }
 
   @Get('console/schools')
   schools(@Query() q: SchoolsQuery) {
