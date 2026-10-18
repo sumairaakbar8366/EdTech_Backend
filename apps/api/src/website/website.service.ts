@@ -8,13 +8,14 @@ import { NotificationsService } from '../communication/notifications.service.js'
 import { detectAllowedType, safeFileName } from '../documents/file-type.js';
 import { ApplicationDetailsDto } from '../hiring/hiring.dto.js';
 import { HiringService } from '../hiring/hiring.service.js';
+import { socialLinks, SocialLinksDto } from '../common/social-links.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { SubscriptionStateService } from '../billing/subscription-state.service.js';
 
 const trimOrNull = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() || null : value);
 
-export class WebsiteDto {
+export class WebsiteDto extends SocialLinksDto {
   @IsOptional() @IsBoolean() published?: boolean;
   @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(160) tagline?: string | null;
   @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(4000) about?: string | null;
@@ -24,7 +25,6 @@ export class WebsiteDto {
   @IsOptional() @Transform(trimOrNull) @IsEmail() @MaxLength(254) email?: string | null;
   @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(300) address?: string | null;
   @IsOptional() @Transform(trimOrNull) @IsUrl({ protocols: ['https'], require_protocol: true }) @MaxLength(600) mapUrl?: string | null;
-  @IsOptional() @Transform(trimOrNull) @IsUrl({ protocols: ['https'], require_protocol: true }) @MaxLength(300) facebookUrl?: string | null;
   @IsOptional() @IsBoolean() admissionsOpen?: boolean;
   @IsOptional() @IsBoolean() careersOpen?: boolean;
   @IsOptional() @IsUUID() heroMediaId?: string | null;
@@ -145,7 +145,7 @@ export class WebsiteService {
         about: w?.about ?? generatedAbout,
         principalName: w?.principalName ?? null,
         principalMessage: w?.principalMessage ?? null,
-        contact: { phone: w?.phone ?? null, email: w?.email ?? null, address: w?.address ?? campuses[0]?.address ?? null, mapUrl: w?.mapUrl ?? null, facebookUrl: w?.facebookUrl ?? null },
+        contact: { phone: w?.phone ?? null, email: w?.email ?? null, address: w?.address ?? campuses[0]?.address ?? null, mapUrl: w?.mapUrl ?? null, ...socialLinks(w) },
         admissionsOpen: w?.admissionsOpen ?? true,
         careersOpen: w?.careersOpen ?? true,
         heroMediaId: w?.heroMediaId ?? media.find((m) => m.category === 'campus')?.id ?? media[0]?.id ?? null,

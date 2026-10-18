@@ -10,10 +10,11 @@ import { SignupController } from './signup/signup.controller.js';
 import { SignupService } from './signup/signup.service.js';
 import { ConsoleController } from './console/console.controller.js';
 import { ConsoleService } from './console/console.service.js';
+import { PlatformSiteController, PublicSiteController } from './site/site.controller.js';
 
 @Module({
   imports: [AuthModule],
-  controllers: [SchoolsController, TiersController, SchoolApplicationsController, SystemController, SignupController, ConsoleController],
+  controllers: [SchoolsController, TiersController, SchoolApplicationsController, SystemController, SignupController, ConsoleController, PublicSiteController, PlatformSiteController],
   providers: [SchoolProvisioningService, TiersService, SignupService, ConsoleService],
   exports: [SchoolProvisioningService],
 })

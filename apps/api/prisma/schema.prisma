@@ -2776,6 +2776,13 @@ model SchoolWebsite {
   address          String?
   mapUrl           String?  @map("map_url")
   facebookUrl      String?  @map("facebook_url")
+  /// WhatsApp number in international form, e.g. +923001234567 (shown as a wa.me chat link).
+  whatsapp         String?
+  instagramUrl     String?  @map("instagram_url")
+  youtubeUrl       String?  @map("youtube_url")
+  linkedinUrl      String?  @map("linkedin_url")
+  tiktokUrl        String?  @map("tiktok_url")
+  xUrl             String?  @map("x_url")
   admissionsOpen   Boolean  @default(true) @map("admissions_open")
   careersOpen      Boolean  @default(true) @map("careers_open")
   heroMediaId      String?  @map("hero_media_id") @db.Uuid
@@ -2822,6 +2829,25 @@ model PlatformBillingSettings {
   updatedAt           DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@map("platform_billing_settings")
+}
+
+/// The public site's contact details and social accounts, set by the owner in the console.
+model PlatformSiteSettings {
+  id           Int      @id @default(1)
+  contactEmail String?  @map("contact_email")
+  phone        String?
+  /// International form, e.g. +923001234567.
+  whatsapp     String?
+  address      String?
+  facebookUrl  String?  @map("facebook_url")
+  instagramUrl String?  @map("instagram_url")
+  youtubeUrl   String?  @map("youtube_url")
+  linkedinUrl  String?  @map("linkedin_url")
+  tiktokUrl    String?  @map("tiktok_url")
+  xUrl         String?  @map("x_url")
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("platform_site_settings")
 }
 
 enum SubscriptionPaymentStatus {

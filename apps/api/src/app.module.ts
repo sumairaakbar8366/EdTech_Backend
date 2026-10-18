@@ -88,6 +88,9 @@ export class AppModule implements NestModule {
         { path: 'public/school-applications', method: RequestMethod.POST },
         // The marketing page's plan list: the same on every host.
         { path: 'public/plans', method: RequestMethod.GET },
+        // The main site's contact details / social accounts and the sitemap (no tenant).
+        { path: 'public/site-settings', method: RequestMethod.GET },
+        { path: 'public/sitemap.xml', method: RequestMethod.GET },
         // Self-service sign-up on the marketing site.
         { path: 'public/signup', method: RequestMethod.POST },
         { path: 'public/signup/code', method: RequestMethod.POST },
