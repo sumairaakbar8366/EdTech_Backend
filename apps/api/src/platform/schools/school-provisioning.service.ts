@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import {
   PERMISSION_CATALOG,
   RESERVED_SLUGS,
@@ -36,12 +36,24 @@ async function ensureLeaveTypes(tx: TenantTx, schoolId: string): Promise<number>
  * Everything happens in one transaction, so a failure leaves nothing behind.
  */
 @Injectable()
-export class SchoolProvisioningService {
+export class SchoolProvisioningService implements OnApplicationBootstrap {
+  private readonly log = new Logger(SchoolProvisioningService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly accounts: AccountsService,
     private readonly resolver: TenantResolverService,
   ) {}
+
+  /** On start: schools created before a system role existed (e.g. the principal) get it. Never fails the start. */
+  async onApplicationBootstrap(): Promise<void> {
+    try {
+      const added = await this.syncSystemRolePermissions();
+      if (added) this.log.log(`system roles synced: ${added} grants added`);
+    } catch (e) {
+      this.log.error(`system role sync failed: ${(e as Error).message}`);
+    }
+  }
 
   /** Idempotently makes sure the global permission catalog matches the page-15 matrix. */
   async ensurePermissionCatalog(): Promise<void> {
@@ -52,8 +64,8 @@ export class SchoolProvisioningService {
   }
 
   /**
-   * Adds any default grants a system role is missing in existing schools (e.g. after a
-   * matrix row is added). Only adds; never removes grants, so school customizations stay.
+   * Adds any system role (e.g. the principal) and default grants missing in existing schools (e.g.
+   * after a matrix row is added). Only adds; never removes grants, so school customizations stay.
    * Returns the number of grants added.
    */
   async syncSystemRolePermissions(): Promise<number> {
@@ -63,6 +75,10 @@ export class SchoolProvisioningService {
     let added = 0;
     for (const { id: schoolId } of schools) {
       added += await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+        const existing = new Set((await tx.role.findMany({ where: { isSystem: true }, select: { key: true } })).map((r) => r.key));
+        for (const def of SCHOOL_ROLES.filter((d) => !existing.has(d.key))) {
+          await tx.role.create({ data: { schoolId, key: def.key, name: def.name, level: def.level, description: def.description, isSystem: true } });
+        }
         const roles = await tx.role.findMany({ where: { isSystem: true }, select: { id: true, key: true } });
         const data = roles.flatMap((role) =>
           isSchoolRoleKey(role.key)

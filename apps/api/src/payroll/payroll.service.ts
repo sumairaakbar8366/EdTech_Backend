@@ -6,6 +6,7 @@ import { schoolClock } from '../common/school-time.js';
 import { fromMinor, toMinor } from '../fees/money.js';
 import type { PayrollRunStatus } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
+import { approverIds } from '../rbac/approvers.js';
 import { NotificationsService } from '../communication/notifications.service.js';
 import { PermissionService } from '../rbac/permission.service.js';
 import { calculatePay, netPay } from './engine.js';
@@ -162,9 +163,11 @@ export class PayrollService {
     });
   }
 
-  /** draft → reviewed (Accounts Review). */
-  submit(schoolId: string, id: string, actorUserId: string) {
-    return this.transition(schoolId, id, ['draft'], { status: 'reviewed', reviewedBy: actorUserId, reviewedAt: new Date() });
+  /** draft → reviewed (Accounts Review); the principal and admins are asked to approve. */
+  async submit(schoolId: string, id: string, actorUserId: string) {
+    const run = await this.transition(schoolId, id, ['draft'], { status: 'reviewed', reviewedBy: actorUserId, reviewedAt: new Date() });
+    await this.notifications.notify(schoolId, await approverIds(this.prisma, schoolId), { eventType: 'payroll_approval', title: 'Payroll waiting for approval', body: 'Accounts sent a payroll run for approval.', link: `/payroll/runs/${id}` });
+    return run;
   }
 
   /** reviewed → approved (Admin Approval). */

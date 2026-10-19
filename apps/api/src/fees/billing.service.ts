@@ -245,6 +245,13 @@ export class BillingService {
     const where: Prisma.PaymentWhereInput = {
       studentId: q.studentId,
       ...((q.from || q.to) && { paidAt: { ...(q.from && { gte: toDateOnly(q.from) }), ...(q.to && { lt: new Date(toDateOnly(q.to).getTime() + 86_400_000) }) } }),
+      ...(q.q && {
+        OR: [
+          { reference: { contains: q.q, mode: 'insensitive' } },
+          { receipt: { receiptNo: { contains: q.q, mode: 'insensitive' } } },
+          { student: { OR: [{ firstName: { contains: q.q, mode: 'insensitive' } }, { lastName: { contains: q.q, mode: 'insensitive' } }, { admissionNo: { contains: q.q, mode: 'insensitive' } }] } },
+        ],
+      }),
     };
     const [items, total] = await Promise.all([
       db.payment.findMany({ where, include: { student: STUDENT_REF, receipt: true, allocations: { include: { invoice: { select: { invoiceNo: true, periodLabel: true } } } } }, orderBy: { paidAt: 'desc' }, skip: (q.page - 1) * q.pageSize, take: q.pageSize }),

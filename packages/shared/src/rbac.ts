@@ -67,28 +67,30 @@ type MatrixRow = Record<MatrixRole, AccessLevel | null>;
  * Approved 2026-10-01: the academics, exams, leave, communication, documents and audit rows,
  * and the non-teaching staff column (own staff record, own attendance, own payroll, own leave,
  * own communication and own documents).
+ * Approved 2026-10-19: the principal column (oversees everything, approvals with the admin, basic
+ * edits; school settings, billing and Users & Access stay with the School Admin).
  */
 // prettier-ignore
 export const PERMISSION_MATRIX: Record<Module, MatrixRow> = {
-  //             school_admin        accounts             teacher            non_teaching_staff          student             parent
-  students:      { school_admin: 'crud',    accounts: 'view',    teacher: 'view',  non_teaching_staff: null,   student: 'own',    parent: 'children' },
-  staff:         { school_admin: 'crud',    accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: null,     parent: null },
-  admissions:    { school_admin: 'crud',    accounts: 'view',    teacher: null,    non_teaching_staff: null,   student: 'own',    parent: 'own' },
-  academics:     { school_admin: 'crud',    accounts: 'view',    teacher: 'view',  non_teaching_staff: null,   student: 'own',    parent: 'children' },
-  attendance:    { school_admin: 'crud',    accounts: 'view',    teacher: 'mark',  non_teaching_staff: 'own',  student: 'own',    parent: 'children' },
-  fees:          { school_admin: 'crud',    accounts: 'crud',    teacher: 'view',  non_teaching_staff: null,   student: 'own',    parent: 'children' },
-  payroll:       { school_admin: 'approve', accounts: 'crud',    teacher: 'own',   non_teaching_staff: 'own',  student: null,     parent: null },
-  assignments:   { school_admin: 'crud',    accounts: null,      teacher: 'crud',  non_teaching_staff: null,   student: 'submit', parent: 'view' },
-  results:       { school_admin: 'crud',    accounts: null,      teacher: 'enter', non_teaching_staff: null,   student: 'view',   parent: 'view' },
-  reports:       { school_admin: 'all',     accounts: 'finance', teacher: 'own',   non_teaching_staff: null,   student: 'own',    parent: 'children' },
-  lms:           { school_admin: 'crud',    accounts: null,      teacher: 'crud',  non_teaching_staff: null,   student: 'view',   parent: 'view' },
-  timetable:     { school_admin: 'crud',    accounts: 'view',    teacher: 'view',  non_teaching_staff: null,   student: 'view',   parent: 'view' },
-  settings:      { school_admin: 'crud',    accounts: null,      teacher: null,    non_teaching_staff: null,   student: null,     parent: null },
-  exams:         { school_admin: 'crud',    accounts: null,      teacher: 'view',  non_teaching_staff: null,   student: 'view',   parent: 'view' },
-  leave:         { school_admin: 'approve', accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: null,     parent: null },
-  communication: { school_admin: 'crud',    accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: 'view',   parent: 'own' },
-  documents:     { school_admin: 'crud',    accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: 'own',    parent: 'children' },
-  audit:         { school_admin: 'view',    accounts: null,      teacher: null,    non_teaching_staff: null,   student: null,     parent: null },
+  //             principal              school_admin        accounts             teacher            non_teaching_staff          student             parent
+  students:      { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: 'view',  non_teaching_staff: null,   student: 'own',    parent: 'children' },
+  staff:         { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: null,     parent: null },
+  admissions:    { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: null,    non_teaching_staff: null,   student: 'own',    parent: 'own' },
+  academics:     { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: 'view',  non_teaching_staff: null,   student: 'own',    parent: 'children' },
+  attendance:    { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: 'mark',  non_teaching_staff: 'own',  student: 'own',    parent: 'children' },
+  fees:          { principal: 'view',    school_admin: 'crud',    accounts: 'crud',    teacher: 'view',  non_teaching_staff: null,   student: 'own',    parent: 'children' },
+  payroll:       { principal: 'approve', school_admin: 'approve', accounts: 'crud',    teacher: 'own',   non_teaching_staff: 'own',  student: null,     parent: null },
+  assignments:   { principal: 'view',    school_admin: 'crud',    accounts: null,      teacher: 'crud',  non_teaching_staff: null,   student: 'submit', parent: 'view' },
+  results:       { principal: 'crud',    school_admin: 'crud',    accounts: null,      teacher: 'enter', non_teaching_staff: null,   student: 'view',   parent: 'view' },
+  reports:       { principal: 'all',     school_admin: 'all',     accounts: 'finance', teacher: 'own',   non_teaching_staff: null,   student: 'own',    parent: 'children' },
+  lms:           { principal: 'view',    school_admin: 'crud',    accounts: null,      teacher: 'crud',  non_teaching_staff: null,   student: 'view',   parent: 'view' },
+  timetable:     { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: 'view',  non_teaching_staff: null,   student: 'view',   parent: 'view' },
+  settings:      { principal: null,      school_admin: 'crud',    accounts: null,      teacher: null,    non_teaching_staff: null,   student: null,     parent: null },
+  exams:         { principal: 'crud',    school_admin: 'crud',    accounts: null,      teacher: 'view',  non_teaching_staff: null,   student: 'view',   parent: 'view' },
+  leave:         { principal: 'approve', school_admin: 'approve', accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: null,     parent: null },
+  communication: { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: 'view',   parent: 'own' },
+  documents:     { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: 'own',    parent: 'children' },
+  audit:         { principal: 'view',    school_admin: 'view',    accounts: null,      teacher: null,    non_teaching_staff: null,   student: null,     parent: null },
 };
 
 /** A permission as stored: "module:action", e.g. "fees:crud". */

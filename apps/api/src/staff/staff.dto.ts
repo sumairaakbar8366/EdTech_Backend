@@ -28,7 +28,7 @@ export const EMPLOYMENT_TYPES = ['full_time', 'part_time', 'contract'] as const;
 export const EMPLOYEE_STATUSES = ['active', 'on_leave', 'resigned', 'terminated'] as const;
 export const GENDERS = ['male', 'female', 'other'] as const;
 /** Roles a staff login may hold. Student and parent accounts are created by their own modules. */
-export const STAFF_LOGIN_ROLES = ['teacher', 'non_teaching_staff', 'accounts', 'school_admin'] as const;
+export const STAFF_LOGIN_ROLES = ['teacher', 'non_teaching_staff', 'accounts', 'school_admin', 'principal'] as const;
 
 export class EmployeeProfileDto {
   @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(500) address?: string | null;

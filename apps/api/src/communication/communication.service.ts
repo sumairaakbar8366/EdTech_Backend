@@ -1,7 +1,7 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PermissionService } from '../rbac/permission.service.js';
-import type { AnnouncementDto, StartThreadDto } from './communication.dto.js';
+import type { AnnouncementDto, PeopleSearchQuery, StartThreadDto } from './communication.dto.js';
 import { NotificationsService } from './notifications.service.js';
 
 type Auth = { schoolId: string; userId: string };
@@ -32,9 +32,9 @@ export class CommunicationService {
   async listAnnouncements(auth: Auth) {
     const access = await this.permissions.loadUserAccess(auth.schoolId, auth.userId);
     const keys = access.roles.map((r) => r.key);
-    const isAdmin = keys.includes('school_admin');
+    const isAdmin = keys.includes('school_admin') || keys.includes('principal');
     return this.prisma.forSchool(auth.schoolId).announcement.findMany({
-      where: isAdmin ? {} : { OR: [{ targetRoles: { isEmpty: true } }, { targetRoles: { hasSome: keys } }] },
+      where: isAdmin ? {} : { OR: [{ targetRoles: { isEmpty: true }, targetUserIds: { isEmpty: true } }, { targetRoles: { hasSome: keys } }, { targetUserIds: { has: auth.userId } }] },
       orderBy: { publishedAt: 'desc' },
       take: 100,
     });
@@ -43,13 +43,67 @@ export class CommunicationService {
   async createAnnouncement(auth: Auth, dto: AnnouncementDto) {
     const db = this.prisma.forSchool(auth.schoolId);
     const targetRoles = dto.targetRoles ?? [];
-    const announcement = await db.announcement.create({ data: { schoolId: auth.schoolId, title: dto.title, body: dto.body, targetRoles, createdBy: auth.userId } });
+    const targetUserIds = dto.targetUserIds ?? [];
+    const everyone = !targetRoles.length && !targetUserIds.length;
     const recipients = await db.user.findMany({
-      where: { status: 'active', ...(targetRoles.length ? { userRoles: { some: { role: { key: { in: targetRoles } } } } } : {}) },
+      where: {
+        status: 'active',
+        ...(!everyone && {
+          OR: [
+            ...(targetRoles.length ? [{ userRoles: { some: { role: { key: { in: targetRoles } } } } }] : []),
+            ...(targetUserIds.length ? [{ id: { in: targetUserIds } }] : []),
+          ],
+        }),
+      },
       select: { id: true },
     });
+    if (!recipients.length) throw new NotFoundException('Nobody matches the chosen recipients');
+    const announcement = await db.announcement.create({ data: { schoolId: auth.schoolId, title: dto.title, body: dto.body, targetRoles, targetUserIds, createdBy: auth.userId } });
     await this.notifications.notify(auth.schoolId, recipients.map((u) => u.id), { eventType: 'announcement', title: dto.title, body: dto.body.slice(0, 280), link: '/notifications' });
     return { ...announcement, recipients: recipients.length };
+  }
+
+  /**
+   * People an announcement can be addressed to, found by name, User ID or email, with what they are
+   * (class and section for students, the children for parents, designation for staff).
+   */
+  async searchPeople(auth: Auth, q: PeopleSearchQuery) {
+    const db = this.prisma.forSchool(auth.schoolId);
+    const text = q.q?.trim();
+    const words = text ? text.split(/\s+/).slice(0, 4) : [];
+    const users = await db.user.findMany({
+      where: {
+        status: 'active',
+        id: { not: auth.userId },
+        ...(q.role && { userRoles: { some: { role: { key: q.role } } } }),
+        AND: words.map((w) => ({
+          OR: [
+            { firstName: { contains: w, mode: 'insensitive' as const } },
+            { lastName: { contains: w, mode: 'insensitive' as const } },
+            { loginId: { contains: w, mode: 'insensitive' as const } },
+            { email: { contains: w.toLowerCase() } },
+          ],
+        })),
+      },
+      orderBy: [{ firstName: 'asc' }, { lastName: 'asc' }],
+      take: 30,
+      select: {
+        id: true,
+        firstName: true,
+        lastName: true,
+        loginId: true,
+        userRoles: { select: { role: { select: { key: true, name: true } } } },
+        employee: { select: { designation: true } },
+        student: { select: { enrollments: { where: { status: 'enrolled' }, take: 1, select: { section: { select: { name: true, schoolClass: { select: { name: true } } } } } } } },
+        guardian: { select: { children: { take: 3, select: { student: { select: { firstName: true } } } } } },
+      },
+    });
+    return users.map((u) => {
+      const section = u.student?.enrollments[0]?.section;
+      const children = u.guardian?.children.map((c) => c.student.firstName) ?? [];
+      const detail = section ? `${section.schoolClass.name} ${section.name}` : children.length ? `Parent of ${children.join(', ')}` : u.employee?.designation ?? null;
+      return { id: u.id, name: `${u.firstName} ${u.lastName}`, loginId: u.loginId, roles: u.userRoles.map((r) => r.role.name), detail };
+    });
   }
 
   async deleteAnnouncement(auth: Auth, id: string) {
@@ -99,7 +153,7 @@ export class CommunicationService {
     }
 
     // School Admins can write to the parents of any enrolled student; teachers to their own sections'.
-    const isAdmin = (await db.userRole.count({ where: { userId: auth.userId, role: { key: 'school_admin' } } })) > 0;
+    const isAdmin = (await db.userRole.count({ where: { userId: auth.userId, role: { key: { in: ['school_admin', 'principal'] } } } })) > 0;
     if (employee || isAdmin) {
       const sections = isAdmin ? [] : await db.teacherAssignment.findMany({ where: { employeeId: employee!.id, academicYearId: year.id }, select: { sectionId: true } });
       const enrolments = await db.studentEnrollment.findMany({

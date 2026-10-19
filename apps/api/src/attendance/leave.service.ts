@@ -2,6 +2,7 @@ import { NotificationsService } from '../communication/notifications.service.js'
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { formatDateOnly, toDateOnly } from '../common/date-only.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
+import { approverIds } from '../rbac/approvers.js';
 import type { ApplyLeaveDto, DecideLeaveDto, LeaveListQuery, LeaveTypeDto } from './attendance.dto.js';
 import { workingDays } from './geo.js';
 
@@ -18,10 +19,9 @@ export class LeaveService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  /** Users who decide leave (School Admins). */
-  private async approvers(schoolId: string): Promise<string[]> {
-    const rows = await this.prisma.forSchool(schoolId).user.findMany({ where: { status: 'active', userRoles: { some: { role: { key: 'school_admin' } } } }, select: { id: true } });
-    return rows.map((r) => r.id);
+  /** Users who decide leave (the principal and the School Admins). */
+  private approvers(schoolId: string): Promise<string[]> {
+    return approverIds(this.prisma, schoolId);
   }
 
   // --- Types ----------------------------------------------------------------------

@@ -34,7 +34,7 @@ const INVALID_CREDENTIALS = 'Invalid email or password';
 
 const INVALID_SCHOOL_CREDENTIALS = 'Invalid email (or User ID) or password';
 
-const ROLE_LABEL: Record<string, string> = { school_admin: 'Admin', accounts: 'Accounts', teacher: 'Teacher', non_teaching_staff: 'Staff', parent: 'Parent', student: 'Student' };
+const ROLE_LABEL: Record<string, string> = { principal: 'Principal', school_admin: 'Admin', accounts: 'Accounts', teacher: 'Teacher', non_teaching_staff: 'Staff', parent: 'Parent', student: 'Student' };
 
 /** A person the main /login (or Google) matched: the owner, or a user at one school. */
 type SignInCandidate = { kind: 'platform'; adminId: string; name: string } | { kind: 'school'; school: { id: string; slug: string; name: string }; userId: string };
@@ -87,7 +87,7 @@ export class AuthService {
         throw new UnauthorizedException(INVALID_CREDENTIALS);
       }
       await this.prisma.platformAdmin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
-      await this.events.record({ ...ctx, platformAdminId: admin.id, identifier, name: admin.name, roles: ['platform_owner'], success: true });
+      await this.events.record({ ...ctx, platformAdminId: admin.id, identifier, name: `${admin.name} (${admin.label ?? 'Owner'})`, roles: ['platform_owner'], success: true });
       return this.issue({ scope: 'platform', sub: admin.id });
     }
 
@@ -198,7 +198,7 @@ export class AuthService {
       const admin = await this.prisma.platformAdmin.findUnique({ where: { id: ticket.userId } });
       if (!admin?.isActive) throw new UnauthorizedException('This account cannot sign in');
       await this.prisma.platformAdmin.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
-      await this.events.record({ ...ctx, platformAdminId: admin.id, identifier: admin.email, name: admin.name, roles: ['platform_owner'], success: true });
+      await this.events.record({ ...ctx, platformAdminId: admin.id, identifier: admin.email, name: `${admin.name} (${admin.label ?? 'Owner'})`, roles: ['platform_owner'], success: true });
       return { ...(await this.issue({ scope: 'platform', sub: admin.id })), remember: ticket.remember };
     }
     if (tenant.kind !== 'school' || tenant.schoolId !== ticket.schoolId) throw new BadRequestException('This sign-in link belongs to another school');
@@ -208,10 +208,10 @@ export class AuthService {
     if (ticket.purpose === 'support' && ticket.platformAdminId) {
       // Owner support session: a normal session (it lasts until the owner signs out), marked as support
       // so every change is audited under the owner's name.
-      const admin = await this.prisma.platformAdmin.findUnique({ where: { id: ticket.platformAdminId }, select: { name: true, email: true, isActive: true } });
+      const admin = await this.prisma.platformAdmin.findUnique({ where: { id: ticket.platformAdminId }, select: { name: true, email: true, isActive: true, label: true } });
       if (!admin?.isActive) throw new UnauthorizedException('This support link is no longer valid');
-      await this.events.record({ ...ctx, schoolId: ticket.schoolId, userId: ticket.userId, platformAdminId: ticket.platformAdminId, loginId: user.loginId, identifier: admin.email, name: `Platform support · ${admin.name}`, roles: ['school_admin'], method: 'support', success: true });
-      return this.issue({ scope: 'school', sub: ticket.userId, sid: ticket.schoolId, sup: ticket.platformAdminId, supn: admin.name });
+      await this.events.record({ ...ctx, schoolId: ticket.schoolId, userId: ticket.userId, platformAdminId: ticket.platformAdminId, loginId: user.loginId, identifier: admin.email, name: `Platform support · ${admin.name} (${admin.label ?? 'Owner'})`, roles: ['school_admin'], method: 'support', success: true });
+      return this.issue({ scope: 'school', sub: ticket.userId, sid: ticket.schoolId, sup: ticket.platformAdminId, supn: `${admin.name} (${admin.label ?? 'Owner'})` });
     }
     const method = ticket.purpose === 'google' ? 'google' : ticket.purpose === 'login' ? 'password' : 'ticket';
     await this.events.record({ ...ctx, schoolId: ticket.schoolId, userId: ticket.userId, loginId: user.loginId, identifier: user.email ?? user.loginId, name: `${user.firstName} ${user.lastName}`, method, success: true });
@@ -244,7 +244,7 @@ export class AuthService {
     if (auth.scope === 'platform') {
       const admin = await this.prisma.platformAdmin.findUniqueOrThrow({
         where: { id: auth.adminId },
-        select: { id: true, email: true, name: true },
+        select: { id: true, email: true, name: true, isPrimary: true, label: true },
       });
       return { scope: 'platform' as const, admin };
     }
@@ -413,6 +413,11 @@ export class AuthService {
     const email = await this.codes.verify(verificationId, `user:${auth.schoolId}:${auth.userId}`, code);
     await this.prisma.forSchool(auth.schoolId).user.update({ where: { id: auth.userId }, data: { email, emailVerifiedAt: new Date() } });
     return { email, emailVerified: true };
+  }
+
+  /** Ends all sessions of an owner account (after the main owner disables it). */
+  endPlatformSessions(adminId: string): Promise<void> {
+    return this.refreshTokens.revokeAllFor({ scope: 'platform', sub: adminId });
   }
 
   /** Ends all sessions of a school user (after an administrator resets or disables the login). */

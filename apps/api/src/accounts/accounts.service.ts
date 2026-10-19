@@ -31,6 +31,7 @@ export function temporaryPassword(): string {
 
 /** User ID prefix by the account's main role. */
 export const LOGIN_PREFIX: Record<SchoolRoleKey, string> = {
+  principal: 'PRN',
   school_admin: 'ADM',
   accounts: 'ACC',
   teacher: 'TCH',
@@ -38,7 +39,7 @@ export const LOGIN_PREFIX: Record<SchoolRoleKey, string> = {
   parent: 'PAR',
   student: 'STU',
 };
-const PRIORITY: readonly SchoolRoleKey[] = ['school_admin', 'accounts', 'teacher', 'non_teaching_staff', 'parent', 'student'];
+const PRIORITY: readonly SchoolRoleKey[] = ['principal', 'school_admin', 'accounts', 'teacher', 'non_teaching_staff', 'parent', 'student'];
 
 /** "TCH", 2026, 7 → "TCH-2026-0007" (the database checks the same format). */
 export const formatLoginId = (prefix: string, year: number, seq: number) => `${prefix}-${year}-${String(seq).padStart(4, '0')}`;
@@ -107,10 +108,11 @@ export class AccountsService {
     schoolId: string,
     person: NewAccount,
     roles: readonly SchoolRoleKey[],
-    opts: { password?: string; temporary?: boolean } = {},
+    opts: { password?: string; temporary?: boolean; /** Custom (non-system) roles, e.g. a shared "Admin 2" access. */ customRoleIds?: string[] } = {},
   ): Promise<GeneratedLogin> {
-    const roleRows = await tx.role.findMany({ where: { key: { in: [...roles] }, isSystem: true }, select: { id: true } });
-    if (roleRows.length !== new Set(roles).size || roles.length === 0) throw new BadRequestException('One or more roles do not exist');
+    const custom = opts.customRoleIds ?? [];
+    const roleRows = [...(roles.length ? await tx.role.findMany({ where: { key: { in: [...roles] }, isSystem: true }, select: { id: true } }) : []), ...custom.map((id) => ({ id }))];
+    if (roleRows.length !== new Set(roles).size + custom.length || roleRows.length === 0) throw new BadRequestException('One or more roles do not exist');
     const email = person.email?.trim().toLowerCase() || null;
     if (!email && !roles.every((r) => r === 'student')) {
       throw new BadRequestException(`${person.firstName} ${person.lastName} needs an email address: people sign in with their own email.`);
@@ -120,7 +122,8 @@ export class AccountsService {
       if (taken) throw new ConflictException(`${email} already signs in as ${taken.firstName} ${taken.lastName} (${taken.loginId}). Use another email, or give that login the extra role in Users & Access.`);
     }
     const password = opts.password ?? temporaryPassword();
-    const primary = PRIORITY.find((r) => roles.includes(r))!;
+    // A login with only a shared-admin role gets an ADM User ID.
+    const primary = PRIORITY.find((r) => roles.includes(r)) ?? 'school_admin';
     const year = person.year ?? new Date().getUTCFullYear();
 
     const id = await this.nextLoginId(tx, schoolId, LOGIN_PREFIX[primary], year);

@@ -28,6 +28,11 @@ model PlatformAdmin {
   passwordHash String    @map("password_hash")
   name         String
   isActive     Boolean   @default(true) @map("is_active")
+  /// The main owner: adds or removes other owners and edits / deletes logs. Others are "Owner 2", "Owner 3"…
+  isPrimary    Boolean   @default(false) @map("is_primary")
+  /// e.g. "Owner 2"; null for the main owner.
+  label        String?
+  createdById  String?   @map("created_by_id") @db.Uuid
   lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(3)
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -2507,14 +2512,16 @@ model Notification {
 
 /// A school-wide message to one or more roles (page 11 entity: title, body, target_roles, published_at).
 model Announcement {
-  id          String   @id @default(uuid(7)) @db.Uuid
-  schoolId    String   @map("school_id") @db.Uuid
-  title       String
-  body        String
-  /// School role keys; empty means everyone.
-  targetRoles String[] @map("target_roles")
-  createdBy   String?  @map("created_by") @db.Uuid
-  publishedAt DateTime @default(now()) @map("published_at") @db.Timestamptz(3)
+  id            String   @id @default(uuid(7)) @db.Uuid
+  schoolId      String   @map("school_id") @db.Uuid
+  title         String
+  body          String
+  /// School role keys. With targetUserIds also empty, the announcement goes to everyone.
+  targetRoles   String[] @map("target_roles")
+  /// Individual people picked by name, on top of any roles.
+  targetUserIds String[] @default([]) @map("target_user_ids") @db.Uuid
+  createdBy     String?  @map("created_by") @db.Uuid
+  publishedAt   DateTime @default(now()) @map("published_at") @db.Timestamptz(3)
 
   school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
@@ -2590,6 +2597,9 @@ model AuditLog {
   method    String
   path      String
   ip        String?
+  /// Set when the main admin or owner edits the entry in the activity monitor.
+  title     String?
+  note      String?
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
@@ -2597,6 +2607,24 @@ model AuditLog {
   @@index([schoolId, createdAt(sort: Desc)])
   @@index([schoolId, entity])
   @@map("audit_logs")
+}
+
+/// Changes made in the owner console (by the main owner or a shared owner account, "Owner 2"…).
+model PlatformAuditLog {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  adminId   String?  @map("admin_id") @db.Uuid
+  actorName String?  @map("actor_name")
+  action    String
+  entity    String
+  method    String
+  path      String
+  ip        String?
+  title     String?
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([createdAt(sort: Desc)])
+  @@map("platform_audit_logs")
 }
 
 // --- Staff tasks (page 4: non-teaching staff "Assigned Tasks") -----------------------------
@@ -3077,6 +3105,9 @@ model LoginEvent {
   reason          String?
   ip              String?
   userAgent       String?  @map("user_agent")
+  /// Set when the main admin or owner edits the entry in the activity monitor.
+  title           String?
+  note            String?
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   school School? @relation(fields: [schoolId], references: [id], onDelete: Cascade)
