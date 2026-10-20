@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { AccountsService, handover, temporaryPassword } from '../../accounts/accounts.service.js';
+import { closeTenure, ensureLeaderRecord } from '../../staff/leader-record.js';
 import { AuthService } from '../../auth/auth.service.js';
 import { PasswordService } from '../../auth/password.service.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
@@ -69,7 +70,12 @@ export class TeamService {
   /** Makes a new principal or School Admin login in a school; the temporary password is returned once. */
   async addLeader(schoolId: string, role: LeadRole, person: { firstName: string; lastName: string; email: string }) {
     if (!(await this.prisma.school.findUnique({ where: { id: schoolId }, select: { id: true } }))) throw new NotFoundException('School not found');
-    const login = await this.prisma.inSchoolTransaction(schoolId, (tx) => this.accounts.createLogin(tx, schoolId, { ...person, emailVerified: false }, [role]));
+    const login = await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+      const l = await this.accounts.createLogin(tx, schoolId, { ...person, emailVerified: false }, [role]);
+      // Principals and admins are staff: the principal handles their leave, salary and clearance.
+      await ensureLeaderRecord(tx, schoolId, l.userId, role);
+      return l;
+    });
     await this.accounts.announce(schoolId, [login]);
     return { temporaryPassword: login.password, credentials: handover(login) };
   }
@@ -88,6 +94,7 @@ export class TeamService {
         const others = await tx.user.count({ where: { id: { not: userId }, status: 'active', NOT: { loginId: { startsWith: 'SUP-' } }, userRoles: { some: { role: { key: 'school_admin' } } } } });
         if (!others) throw new BadRequestException('This is the school\'s only School Admin. Add another admin first.');
       }
+      await closeTenure(tx, schoolId, userId, { action: 'role_removed', role, reason: 'Removed by the platform owner' });
       await tx.userRole.delete({ where: { userId_roleId: { userId, roleId: held.roleId } } });
       if (user.userRoles.length === 1) {
         await tx.user.update({ where: { id: userId }, data: { status: 'disabled' } });

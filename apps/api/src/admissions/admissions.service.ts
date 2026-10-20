@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { toDateOnly } from '../common/date-only.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
+import { PhotosService } from '../photos/photos.service.js';
 import { StudentsService } from '../students/students.service.js';
 import {
   ADMISSION_TRANSITIONS,
@@ -27,6 +28,7 @@ export class AdmissionsService {
     private readonly prisma: PrismaService,
     private readonly students: StudentsService,
     private readonly accounts: AccountsService,
+    private readonly photos: PhotosService,
   ) {}
 
   async list(schoolId: string, q: ListApplicationsQuery) {
@@ -70,7 +72,8 @@ export class AdmissionsService {
   }
 
   /** `actorUserId` is null for applications submitted on the school's public website. */
-  create(schoolId: string, dto: ApplicationDto, actorUserId: string | null, source: 'office' | 'website' = 'office') {
+  async create(schoolId: string, dto: ApplicationDto, actorUserId: string | null, source: 'office' | 'website' = 'office') {
+    const photoKey = dto.photoId ? await this.photos.claim(schoolId, dto.photoId) : null;
     return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const yearId = await resolveYear(tx, dto.academicYearId);
       await assertClassAndCampus(tx, dto.classId, dto.campusId);
@@ -95,6 +98,7 @@ export class AdmissionsService {
           guardianEmail: dto.guardianEmail ?? null,
           address: dto.address ?? null,
           notes: dto.notes ?? null,
+          photoKey,
           source,
         },
       });
@@ -103,7 +107,8 @@ export class AdmissionsService {
     });
   }
 
-  update(schoolId: string, id: string, dto: ApplicationDto) {
+  async update(schoolId: string, id: string, { photoId, ...dto }: ApplicationDto) {
+    const photoKey = photoId ? await this.photos.claim(schoolId, photoId) : undefined;
     return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const app = await tx.admissionApplication.findUnique({ where: { id }, select: { status: true } });
       if (!app) throw new NotFoundException('Application not found');
@@ -112,7 +117,7 @@ export class AdmissionsService {
       await assertClassAndCampus(tx, dto.classId, dto.campusId);
       return tx.admissionApplication.update({
         where: { id },
-        data: { ...dto, academicYearId: yearId, dateOfBirth: toDateOnly(dto.dateOfBirth) },
+        data: { ...dto, academicYearId: yearId, dateOfBirth: toDateOnly(dto.dateOfBirth), ...(photoKey && { photoKey }) },
       });
     });
   }
@@ -197,6 +202,8 @@ export class AdmissionsService {
           enrollment: { academicYearId: app.academicYearId, sectionId: dto.sectionId, rollNo: dto.rollNo },
           login: dto.studentLogin,
         }, logins);
+        // The picture sent with the application becomes the student's profile picture.
+        if (app.photoKey) await tx.student.update({ where: { id: student.id }, data: { photoKey: app.photoKey } });
 
         // Generated logins by role ("usman.tariq.parent@…", "hania.usman.student@…"); a sibling's
         // parent who already has a login keeps it.

@@ -11,6 +11,7 @@ import {
   type Module,
 } from '@schoolerp/shared';
 import { AccountsService } from '../../accounts/accounts.service.js';
+import { ensureLeaderRecord } from '../../staff/leader-record.js';
 import { PrismaService, setSchool, type TenantTx } from '../../prisma/prisma.service.js';
 import { TenantResolverService } from '../../tenancy/tenant-resolver.service.js';
 import type { CreateSchoolDto } from './create-school.dto.js';
@@ -187,6 +188,8 @@ export class SchoolProvisioningService implements OnApplicationBootstrap {
           ['school_admin'],
           { password: dto.admin.password, temporary: temporaryAdminPassword },
         );
+        // The administrator is staff too: leave, salary and clearance go through the principal.
+        await ensureLeaderRecord(tx, school.id, admin.userId, 'school_admin');
 
         return {
           school,

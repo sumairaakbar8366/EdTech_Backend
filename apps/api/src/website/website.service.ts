@@ -169,6 +169,7 @@ export class WebsiteService {
     const w = await this.prisma.forSchool(schoolId).schoolWebsite.findUnique({ where: { schoolId }, select: { admissionsOpen: true, published: true } });
     if (w && (!w.admissionsOpen || !w.published)) throw new BadRequestException('Online admissions are closed at the moment; please contact the school office');
     const { website: _honeypot, ...application } = dto;
+    if (!application.photoId) throw new BadRequestException("Please add the student's photo");
     const app = await this.admissions.create(schoolId, application, null, 'website');
     await this.notifyAdmins(schoolId, 'admission_application', `New admission application · ${app.firstName} ${app.lastName}`, `${app.applicationNo} · received on the school website`, `/admissions/${app.id}`);
     return { applicationNo: app.applicationNo };
@@ -178,6 +179,7 @@ export class WebsiteService {
     const w = await this.prisma.forSchool(schoolId).schoolWebsite.findUnique({ where: { schoolId }, select: { careersOpen: true, published: true } });
     if (w && (!w.careersOpen || !w.published)) throw new BadRequestException('Online job applications are closed at the moment');
     const { website: _honeypot, ...details } = dto;
+    if (!details.photoId) throw new BadRequestException('Please add your photo');
     const app = await this.hiring.addApplication(schoolId, postId, details, 'website');
     const post = await this.prisma.forSchool(schoolId).jobPost.findUnique({ where: { id: postId }, select: { title: true } });
     await this.notifyAdmins(schoolId, 'job_application', `New job application · ${app.firstName} ${app.lastName}`, `${post?.title ?? 'Vacancy'} · received on the school website`, '/staff/hiring');

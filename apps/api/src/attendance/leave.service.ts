@@ -8,7 +8,7 @@ import { workingDays } from './geo.js';
 
 const REQUEST_INCLUDE = {
   leaveType: { select: { id: true, name: true, code: true, isPaid: true } },
-  employee: { select: { id: true, firstName: true, lastName: true, employeeNo: true, designation: true } },
+  employee: { select: { id: true, firstName: true, lastName: true, employeeNo: true, designation: true, photoKey: true } },
 } as const;
 
 /** Leave types, requests, balances and approval (Leave row: Admin Approve, Accounts View, staff Own). */

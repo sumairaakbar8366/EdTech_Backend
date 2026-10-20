@@ -14,6 +14,7 @@ import { PayrollModule } from './payroll/payroll.module.js';
 import { LmsModule } from './lms/lms.module.js';
 import { ExamsModule } from './exams/exams.module.js';
 import { AuditModule } from './audit/audit.module.js';
+import { PhotosModule } from './photos/photos.module.js';
 import { CommunicationModule } from './communication/communication.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { SettingsModule } from './settings/settings.module.js';
@@ -67,6 +68,7 @@ import { TenantMiddleware } from './tenancy/tenant.middleware.js';
     CommunicationModule,
     ReportsModule,
     AuditModule,
+    PhotosModule,
     SettingsModule,
     TasksModule,
     UsersModule,

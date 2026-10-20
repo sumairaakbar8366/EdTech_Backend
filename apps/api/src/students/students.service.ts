@@ -3,6 +3,7 @@ import { AccountsService, handover, type GeneratedLogin } from '../accounts/acco
 import { toDateOnly } from '../common/date-only.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
+import { PhotosService } from '../photos/photos.service.js';
 import type {
   CreateStudentDto,
   EmergencyContactDto,
@@ -34,6 +35,7 @@ export class StudentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly accounts: AccountsService,
+    private readonly photos: PhotosService,
   ) {}
 
   // --- Queries ------------------------------------------------------------------
@@ -64,6 +66,7 @@ export class StudentsService {
         take: q.pageSize,
         select: {
           id: true,
+          photoKey: true,
           admissionNo: true,
           firstName: true,
           lastName: true,
@@ -143,6 +146,7 @@ export class StudentsService {
         student: {
           select: {
             id: true,
+            photoKey: true,
             admissionNo: true,
             firstName: true,
             lastName: true,
@@ -185,11 +189,47 @@ export class StudentsService {
     });
   }
 
+  /**
+   * The parent dashboard's child cards: attendance this academic year, fees still to pay (and how
+   * much is overdue), and the latest published result. Only the parent's own children.
+   */
+  async childrenOverview(schoolId: string, userId: string) {
+    const db = this.prisma.forSchool(schoolId);
+    const guardian = await db.guardian.findUnique({ where: { userId }, select: { id: true } });
+    if (!guardian) return [];
+    const year = await db.academicYear.findFirst({ where: { isCurrent: true }, select: { id: true, startDate: true } });
+    const links = await db.studentGuardian.findMany({ where: { guardianId: guardian.id }, select: { studentId: true } });
+    const ids = links.map((l) => l.studentId);
+    if (!ids.length) return [];
+    const since = year?.startDate ?? new Date(Date.now() - 365 * 86_400_000);
+    const [attendance, invoices, cards] = await Promise.all([
+      db.studentAttendance.groupBy({ by: ['studentId', 'status'], where: { studentId: { in: ids }, markedAt: { gte: since } }, _count: { _all: true } }),
+      db.invoice.findMany({ where: { studentId: { in: ids }, status: { in: ['pending', 'partial', 'overdue'] } }, select: { studentId: true, total: true, amountPaid: true, status: true, dueDate: true } }),
+      db.reportCard.findMany({ where: { studentId: { in: ids }, exam: { status: 'published' } }, orderBy: { generatedAt: 'desc' }, select: { studentId: true, grade: true, percentage: true, passed: true, exam: { select: { name: true } } } }),
+    ]);
+    return ids.map((id) => {
+      const rows = attendance.filter((a) => a.studentId === id);
+      const total = rows.reduce((t, r) => t + r._count._all, 0);
+      const attended = rows.filter((r) => r.status === 'present' || r.status === 'late').reduce((t, r) => t + r._count._all, 0);
+      const due = invoices.filter((i) => i.studentId === id);
+      const card = cards.find((c) => c.studentId === id);
+      return {
+        studentId: id,
+        attendancePercent: total ? Math.round((attended / total) * 100) : null,
+        feesDue: due.reduce((t, i) => t + Number(i.total) - Number(i.amountPaid), 0),
+        overdueInvoices: due.filter((i) => i.status === 'overdue').length,
+        nextDueDate: due.map((i) => i.dueDate).sort((a, b) => a.getTime() - b.getTime())[0] ?? null,
+        latestResult: card ? { exam: card.exam.name, grade: card.grade, percentage: Number(card.percentage), passed: card.passed } : null,
+      };
+    });
+  }
+
   // --- Create / update ----------------------------------------------------------
 
   async create(schoolId: string, dto: CreateStudentDto) {
     const logins: GeneratedLogin[] = [];
     const student = await this.prisma.inSchoolTransaction(schoolId, (tx) => this.createInTx(tx, schoolId, dto, logins), { timeout: 20_000 });
+    if (dto.photoId) await this.photos.setFor(schoolId, 'student', student.id, dto.photoId);
     await this.accounts.announce(schoolId, logins);
     return { ...student, credentials: logins.map(handover) };
   }

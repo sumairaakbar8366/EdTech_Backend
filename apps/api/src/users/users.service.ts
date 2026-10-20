@@ -8,6 +8,7 @@ import { DeliveryService } from '../delivery/delivery.service.js';
 import { WebUrls } from '../delivery/web-urls.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
+import { closeTenure, ensureLeaderRecord, openTenure } from '../staff/leader-record.js';
 import { permissionKey, type AccessLevel, type Module } from '@schoolerp/shared';
 import { DELEGATE_PREFIX, SHAREABLE_ACCESS } from './delegates.js';
 import type { CandidatesQuery, EmailProofDto, GrantAccessDto, ListUsersQuery, PersonType, SetEmailDto, SharedAccessItem, ShareAccessDto } from './users.dto.js';
@@ -30,6 +31,7 @@ const USER_SELECT = {
   mustChangePassword: true,
   lastLoginAt: true,
   createdAt: true,
+  photoKey: true,
   userRoles: { select: { role: { select: { key: true, name: true } } } },
   employee: { select: { id: true, employeeNo: true, designation: true, status: true } },
   guardian: { select: { id: true, _count: { select: { children: true } } } },
@@ -193,8 +195,18 @@ export class UsersService {
         await this.assertAnotherAdmin(tx, id);
       }
       const rows = await tx.role.findMany({ where: { key: { in: roles }, isSystem: true }, select: { id: true } });
+      // Service record: a School Admin / Principal role taken away ends that period, a new one starts one.
+      for (const k of ['school_admin', 'principal'] as const) {
+        const had = user.userRoles.some((r) => r.role.key === k);
+        if (had && !roles.includes(k)) await closeTenure(tx, schoolId, id, { action: 'role_removed', role: k, endedByUserId: actorId });
+      }
       await tx.userRole.deleteMany({ where: { userId: id } });
       await tx.userRole.createMany({ data: rows.map((r) => ({ userId: id, roleId: r.id, schoolId })) });
+      for (const k of ['school_admin', 'principal'] as const) {
+        if (!roles.includes(k)) continue;
+        if (!user.userRoles.some((r) => r.role.key === k)) await openTenure(tx, schoolId, id, k, new Date());
+        await ensureLeaderRecord(tx, schoolId, id, k);
+      }
     });
     return this.one(schoolId, id);
   }
@@ -231,7 +243,9 @@ export class UsersService {
         if (user.employee && !EMPLOYED.includes(user.employee.status)) throw new BadRequestException('This staff member has left the school');
         if (user.student && user.student.status !== 'active' && !user.employee && !user.guardian) throw new BadRequestException('This student is no longer active');
       }
+      if (status === 'disabled') await closeTenure(tx, schoolId, id, { action: 'suspended', reason: 'Login disabled in Users & Access', endedByUserId: actorId });
       await tx.user.update({ where: { id }, data: { status } });
+      if (status === 'active') for (const r of user.userRoles) if (r.role.key === 'school_admin' || r.role.key === 'principal') await openTenure(tx, schoolId, id, r.role.key, new Date());
     });
     if (status === 'disabled') await this.auth.endSessions(schoolId, id);
     return this.one(schoolId, id);

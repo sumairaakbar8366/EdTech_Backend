@@ -3,6 +3,7 @@ import type { Prisma } from '../generated/prisma/client.js';
 import { AccountsService } from '../accounts/accounts.service.js';
 import { toDateOnly } from '../common/date-only.js';
 import { PrismaService, type SchoolScopedClient, type TenantTx } from '../prisma/prisma.service.js';
+import { PhotosService } from '../photos/photos.service.js';
 import { StaffService } from '../staff/staff.service.js';
 import {
   APPLICATION_TRANSITIONS,
@@ -25,6 +26,7 @@ export class HiringService {
     private readonly prisma: PrismaService,
     private readonly staff: StaffService,
     private readonly accounts: AccountsService,
+    private readonly photos: PhotosService,
   ) {}
 
   // --- Job posts --------------------------------------------------------------
@@ -136,7 +138,7 @@ export class HiringService {
     return { ...app, hiredCount };
   }
 
-  async addApplication(schoolId: string, postId: string, dto: ApplicationDetailsDto, source: 'office' | 'website' = 'office', actorUserId?: string) {
+  async addApplication(schoolId: string, postId: string, { photoId, ...dto }: ApplicationDetailsDto, source: 'office' | 'website' = 'office', actorUserId?: string) {
     const db = this.prisma.forSchool(schoolId);
     const post = await db.jobPost.findUnique({ where: { id: postId } });
     if (!post) throw new NotFoundException('Job post not found');
@@ -147,19 +149,21 @@ export class HiringService {
     if (await db.jobApplication.findFirst({ where: { jobPostId: postId, email: dto.email, status: { notIn: ['rejected', 'withdrawn'] } }, select: { id: true } })) {
       throw new ConflictException(`${dto.email} has already applied for this post`);
     }
+    const photoKey = photoId ? await this.photos.claim(schoolId, photoId) : null;
     return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
-      const app = await tx.jobApplication.create({ data: { schoolId, jobPostId: postId, ...details(dto), source } });
+      const app = await tx.jobApplication.create({ data: { schoolId, jobPostId: postId, ...details(dto), photoKey, source } });
       await logStatus(tx, schoolId, app.id, null, 'applied', source === 'website' ? 'Applied on the school website' : 'Added by the office', actorUserId);
       return app;
     });
   }
 
-  async updateApplication(schoolId: string, id: string, dto: ApplicationDetailsDto) {
+  async updateApplication(schoolId: string, id: string, { photoId, ...dto }: ApplicationDetailsDto) {
     const db = this.prisma.forSchool(schoolId);
     const app = await db.jobApplication.findUnique({ where: { id }, select: { status: true } });
     if (!app) throw new NotFoundException('Application not found');
     if (app.status === 'hired') throw new BadRequestException('A hired application can no longer be edited; update the staff record instead');
-    return db.jobApplication.update({ where: { id }, data: details(dto) });
+    const photoKey = photoId ? await this.photos.claim(schoolId, photoId) : undefined;
+    return db.jobApplication.update({ where: { id }, data: { ...details(dto), ...(photoKey && { photoKey }) } });
   }
 
   move(schoolId: string, id: string, dto: MoveApplicationDto, actorUserId: string) {
@@ -250,6 +254,8 @@ export class HiringService {
         `Hired through "${app.jobPost.title}"`,
       );
       await tx.jobApplication.update({ where: { id: applicationId }, data: { status: 'hired', employeeId: employee.id } });
+      // The picture sent with the application becomes the staff member's profile picture.
+      if (app.photoKey) await tx.employee.update({ where: { id: employee.id }, data: { photoKey: app.photoKey } });
       await logStatus(tx, schoolId, applicationId, 'selected', 'hired', `Joined as ${employee.employeeNo} on ${dto.joinDate}`, actorUserId);
       return { employeeId: employee.id, employeeNo: employee.employeeNo, credentials: employee.credentials, login: employee.login };
     }).then(async ({ login, ...rest }) => {

@@ -3,7 +3,11 @@ import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import type { AppRequest, TenantContext } from '../common/request-context.js';
 import type { PermissionService } from '../rbac/permission.service.js';
-import { IS_PUBLIC, REQUIRED_ACCESS, REQUIRED_SCOPE } from './decorators.js';
+import type { ConfigService } from '@nestjs/config';
+import type { Env } from '../config/env.js';
+import type { PrismaService } from '../prisma/prisma.service.js';
+import type { RedisService } from '../redis/redis.service.js';
+import { ALLOW_PENDING_PASSWORD, IS_PUBLIC, REQUIRED_ACCESS, REQUIRED_SCOPE } from './decorators.js';
 import { AccessGuard, AuthGuard } from './guards.js';
 
 const SCHOOL_A = '0192f0a0-0000-7000-8000-00000000000a';
@@ -26,8 +30,29 @@ function request(tenant: TenantContext, token?: string): Partial<AppRequest> {
 
 const schoolA: TenantContext = { kind: 'school', schoolId: SCHOOL_A, slug: 'alpha', name: 'Alpha' };
 
+/** A school user as the guard reads it; verified unless a test says otherwise. */
+let user: { email: string | null; emailVerifiedAt: Date | null; userRoles: { role: { key: string } }[] } | null = { email: 'a@b.c', emailVerifiedAt: new Date(), userRoles: [{ role: { key: 'teacher' } }] };
+const prisma = { forSchool: () => ({ user: { findUnique: async () => user } }) } as unknown as PrismaService;
+const redis = { get: async () => null, set: async () => 'OK' } as unknown as RedisService;
+const config = { get: () => 'required' } as unknown as ConfigService<Env, true>;
+
 describe('AuthGuard', () => {
-  const guard = new AuthGuard(new Reflector(), jwt);
+  const guard = new AuthGuard(new Reflector(), jwt, prisma, redis, config);
+
+  it('refuses a school login whose email is not verified, except for sign-in steps', async () => {
+    user = { email: 'new@school.pk', emailVerifiedAt: null, userRoles: [{ role: { key: 'teacher' } }] };
+    const token = jwt.sign({ sub: 'u1', scope: 'school', sid: SCHOOL_A });
+    await expect(guard.canActivate(context(request(schoolA, token)))).rejects.toThrow(ForbiddenException);
+    await expect(guard.canActivate(context(request(schoolA, token), { [ALLOW_PENDING_PASSWORD]: true }))).resolves.toBe(true);
+    user = { email: 'a@b.c', emailVerifiedAt: new Date(), userRoles: [{ role: { key: 'teacher' } }] };
+  });
+
+  it('lets a student without an email of their own in', async () => {
+    user = { email: null, emailVerifiedAt: null, userRoles: [{ role: { key: 'student' } }] };
+    const token = jwt.sign({ sub: 'u1', scope: 'school', sid: SCHOOL_A });
+    await expect(guard.canActivate(context(request(schoolA, token)))).resolves.toBe(true);
+    user = { email: 'a@b.c', emailVerifiedAt: new Date(), userRoles: [{ role: { key: 'teacher' } }] };
+  });
 
   it('lets public routes through without a token', async () => {
     await expect(guard.canActivate(context(request(schoolA), { [IS_PUBLIC]: true }))).resolves.toBe(true);

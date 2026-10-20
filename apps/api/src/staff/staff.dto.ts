@@ -52,6 +52,8 @@ export class StaffLoginDto {
 }
 
 export class CreateEmployeeDto {
+  /** The staff member's picture, uploaded first (POST /photos/upload). */
+  @IsOptional() @IsUUID() photoId?: string;
   @IsUUID() campusId: string;
 
   @IsOptional()
@@ -134,4 +136,22 @@ export class ListAssignmentsQuery {
   @IsOptional() @IsUUID() academicYearId?: string;
   @IsOptional() @IsUUID() sectionId?: string;
   @IsOptional() @IsUUID() employeeId?: string;
+}
+
+/** Who becomes School Admin when the current one is replaced. */
+export class NewAdminDto {
+  /** self: the person doing the handover (e.g. the principal); staff: an existing staff member; new: someone new by email. */
+  @IsIn(['self', 'staff', 'new']) mode: 'self' | 'staff' | 'new';
+  @IsOptional() @IsUUID() employeeId?: string;
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(100) firstName?: string;
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(100) lastName?: string;
+  @IsOptional() @Transform(lower) @IsEmail() @MaxLength(254) email?: string;
+}
+
+/** Replace a School Admin: first the new admin, then the old one is suspended or leaves. */
+export class ReplaceAdminDto {
+  /** suspend: the login is closed, employment stays; resigned / terminated: they leave the school. */
+  @IsIn(['suspend', 'resigned', 'terminated']) action: 'suspend' | 'resigned' | 'terminated';
+  @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(500) reason?: string | null;
+  @ValidateNested() @Type(() => NewAdminDto) newAdmin: NewAdminDto;
 }

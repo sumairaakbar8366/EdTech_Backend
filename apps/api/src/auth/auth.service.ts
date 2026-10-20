@@ -251,12 +251,19 @@ export class AuthService {
 
     const user = await this.prisma.forSchool(auth.schoolId).user.findUniqueOrThrow({
       where: { id: auth.userId },
-      select: { id: true, loginId: true, email: true, emailVerifiedAt: true, firstName: true, lastName: true, phone: true, mustChangePassword: true },
+      select: {
+        id: true, loginId: true, email: true, emailVerifiedAt: true, firstName: true, lastName: true, phone: true, mustChangePassword: true, photoKey: true,
+        employee: { select: { photoKey: true } }, student: { select: { photoKey: true } }, guardian: { select: { photoKey: true } },
+      },
     });
     const access = await this.permissions.loadUserAccess(auth.schoolId, auth.userId);
     const school = tenant.kind === 'school' ? { id: tenant.schoolId, name: tenant.name, slug: tenant.slug } : null;
-    const { emailVerifiedAt, ...rest } = user;
-    return { scope: 'school' as const, user: { ...rest, emailVerified: !!emailVerifiedAt || this.emailCheckOff }, school, ...access, support: auth.support ? { name: auth.support.name } : null };
+    const { emailVerifiedAt, photoKey, employee, student, guardian, ...rest } = user;
+    // Their picture: the staff / student / parent record's, else the login's own.
+    const photo = employee?.photoKey ?? student?.photoKey ?? guardian?.photoKey ?? photoKey ?? null;
+    /** Students and staff ask the admin to change a picture they already have. */
+    const photoNeedsApproval = !!(employee?.photoKey ?? student?.photoKey) && !access.roles.some((r) => r.key === 'school_admin' || r.key === 'principal');
+    return { scope: 'school' as const, user: { ...rest, photoKey: photo, photoNeedsApproval, emailVerified: !!emailVerifiedAt || this.emailCheckOff }, school, ...access, support: auth.support ? { name: auth.support.name } : null };
   }
 
   /**

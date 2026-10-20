@@ -31,6 +31,8 @@ export const ADMISSION_TRANSITIONS: Record<AdmissionStatus, readonly AdmissionSt
 };
 
 export class ApplicationDto {
+  /** The applicant's picture, uploaded first (POST /photos/upload or /public/photos). Required on the website form. */
+  @IsOptional() @IsUUID() photoId?: string;
   @IsOptional() @IsUUID() academicYearId?: string;
   @IsUUID() classId: string;
   @IsUUID() campusId: string;

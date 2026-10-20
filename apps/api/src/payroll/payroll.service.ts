@@ -12,7 +12,7 @@ import { PermissionService } from '../rbac/permission.service.js';
 import { calculatePay, netPay } from './engine.js';
 import type { AdjustItemDto, CreateRunDto, PayRunDto, SalaryStructureDto } from './payroll.dto.js';
 
-const EMPLOYEE_REF = { select: { id: true, employeeNo: true, firstName: true, lastName: true, designation: true, staffType: true, userId: true } } as const;
+const EMPLOYEE_REF = { select: { id: true, employeeNo: true, firstName: true, lastName: true, designation: true, staffType: true, userId: true, photoKey: true } } as const;
 const PAYABLE_STATUSES = ['active', 'on_leave'] as const;
 
 /** Page 9: salary structures, payroll runs (draft → reviewed → approved → paid) and payslips. */
@@ -238,7 +238,7 @@ export class PayrollService {
       take: 1000,
       select: {
         id: true, gross: true, totalDeductions: true, net: true,
-        employee: { select: { id: true, employeeNo: true, firstName: true, lastName: true, designation: true } },
+        employee: { select: { id: true, employeeNo: true, firstName: true, lastName: true, designation: true, photoKey: true } },
         payslip: { select: { payslipNo: true } },
         payment: { select: { method: true, reference: true, paidAt: true, payeeAccount: true } },
         run: { select: { id: true, period: { select: { name: true, startDate: true } } } },
