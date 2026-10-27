@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
-import { AuditController } from './audit.controller.js';
+import { ActivityService } from './activity.service.js';
+import { ActivityController, AuditController, PlatformActivityController } from './audit.controller.js';
 import { AuditInterceptor } from './audit.interceptor.js';
 
-@Module({ controllers: [AuditController], providers: [{ provide: APP_INTERCEPTOR, useClass: AuditInterceptor }] })
+@Module({ controllers: [AuditController, ActivityController, PlatformActivityController], providers: [ActivityService, { provide: APP_INTERCEPTOR, useClass: AuditInterceptor }] })
 export class AuditModule {}

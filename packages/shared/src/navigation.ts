@@ -28,9 +28,13 @@ function items(labels: string[]): NavItem[] {
 }
 
 export const ROLE_NAVIGATION: Record<SchoolRoleKey, readonly NavItem[]> = {
+  principal: items([
+    'Dashboard', 'Activity', 'Live Classes', 'Students', 'Staff', 'Admissions', 'Attendance', 'Timetable', 'Exams & Results',
+    'Finance', 'Payroll', 'Communication', 'Reports', 'Documents',
+  ]),
   school_admin: items([
-    'Dashboard', 'Students', 'Staff', 'Admissions', 'Academics', 'Attendance', 'Timetable',
-    'Finance', 'Payroll', 'LMS', 'Exams & Results', 'Communication', 'Reports', 'Documents', 'Website', 'Users & Access', 'Plans & Billing', 'Settings',
+    'Dashboard', 'Students', 'Staff', 'Admissions', 'Academics', 'Attendance', 'Timetable', 'Live Classes',
+    'Finance', 'Payroll', 'LMS', 'Exams & Results', 'Communication', 'Reports', 'Documents', 'Website', 'Users & Access', 'Activity', 'Plans & Billing', 'Settings',
   ]),
   accounts: items([
     'Dashboard', 'Fee Structures', 'Student Invoices', 'Payments', 'Pending Fees', 'Overdue Fees',

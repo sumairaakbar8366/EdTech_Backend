@@ -99,6 +99,9 @@ export class StudentLoginDto {
 }
 
 export class CreateStudentDto {
+  /** The student's picture, uploaded first (POST /photos/upload). */
+  @IsOptional() @IsUUID() photoId?: string;
+
   @IsOptional()
   @Transform(({ value }) => (typeof value === 'string' ? value.trim().toUpperCase() || undefined : value))
   @Matches(/^[A-Z0-9-]{1,20}$/, { message: 'admissionNo must be 1–20 letters, digits or hyphens' })

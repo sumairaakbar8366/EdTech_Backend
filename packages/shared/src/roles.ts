@@ -3,6 +3,7 @@
 // (lower = more authority) and is stored in roles.level as the blueprint ERD specifies.
 
 export const SCHOOL_ROLE_KEYS = [
+  'principal',
   'school_admin',
   'accounts',
   'teacher',
@@ -21,6 +22,7 @@ export interface SchoolRoleDefinition {
 }
 
 export const SCHOOL_ROLES: readonly SchoolRoleDefinition[] = [
+  { key: 'principal', name: 'Principal', level: 0, description: 'Oversees the whole school: sees every activity, approves, basic edits' },
   { key: 'school_admin', name: 'School Admin', level: 1, description: 'Full school management authority' },
   { key: 'accounts', name: 'Accounts', level: 2, description: 'Financial operations' },
   { key: 'teacher', name: 'Teacher', level: 3, description: 'Classroom & academic operations' },

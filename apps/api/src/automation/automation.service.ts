@@ -130,7 +130,7 @@ export class AutomationService implements OnModuleInit {
       if (kind === 'locked') {
         const owners = await this.prisma.platformAdmin.findMany({ where: { isActive: true }, select: { email: true, name: true } });
         for (const o of owners) {
-          await this.delivery.trySend({ channel: 'email', to: o.email, template: 'notification', data: { name: o.name, schoolName: 'SchoolERP', title: `${s.name} is now locked`, body: `${s.name} (${s.slug}) did not pay after its ${trial ? 'trial' : 'plan'} and grace period. You can extend it under Schools → Plan & dates.`, url: this.urls.platform('/schools') } });
+          await this.delivery.trySend({ channel: 'email', to: o.email, template: 'notification', data: { name: o.name, schoolName: 'Skool EdTech', title: `${s.name} is now locked`, body: `${s.name} (${s.slug}) did not pay after its ${trial ? 'trial' : 'plan'} and grace period. You can extend it under Schools → Plan & dates.`, url: this.urls.platform('/schools') } });
         }
       }
       sent.push(`${s.slug}:${kind}`);

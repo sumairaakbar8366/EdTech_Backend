@@ -3,6 +3,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { toDateOnly } from '../common/date-only.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
+import { PhotosService } from '../photos/photos.service.js';
 import { StudentsService } from '../students/students.service.js';
 import {
   ADMISSION_TRANSITIONS,
@@ -13,6 +14,12 @@ import {
   type ListApplicationsQuery,
   type MoveAdmissionDto,
 } from './admissions.dto.js';
+import { answerOf, answerRow, savedValues, type FormAnswer } from './admission-form.js';
+
+export interface ApplicationExtras {
+  formAnswers?: FormAnswer[];
+  documents?: { id: string; category: string; title: string; fileName: string; mimeType: string; sizeBytes: number; storageKey: string }[];
+}
 
 const LIST_INCLUDE = {
   academicYear: { select: { id: true, name: true } },
@@ -27,6 +34,7 @@ export class AdmissionsService {
     private readonly prisma: PrismaService,
     private readonly students: StudentsService,
     private readonly accounts: AccountsService,
+    private readonly photos: PhotosService,
   ) {}
 
   async list(schoolId: string, q: ListApplicationsQuery) {
@@ -63,14 +71,20 @@ export class AdmissionsService {
         assessments: { orderBy: { scheduledAt: 'desc' } },
         statusHistory: { orderBy: { changedAt: 'desc' } },
         student: { select: { id: true, admissionNo: true } },
+        answers: { orderBy: { position: 'asc' } },
       },
     });
     if (!app) throw new NotFoundException('Application not found');
-    return app;
+    const { answers, ...rest } = app;
+    return { ...rest, formAnswers: answers.map(answerOf) };
   }
 
-  /** `actorUserId` is null for applications submitted on the school's public website. */
-  create(schoolId: string, dto: ApplicationDto, actorUserId: string | null, source: 'office' | 'website' = 'office') {
+  /**
+   * `actorUserId` is null for applications submitted on the school's public website, which also sends
+   * the answers to the school's own form fields and the documents uploaded with it.
+   */
+  async create(schoolId: string, dto: ApplicationDto, actorUserId: string | null, source: 'office' | 'website' = 'office', extra: ApplicationExtras = {}) {
+    const photoKey = dto.photoId ? await this.photos.claim(schoolId, dto.photoId) : null;
     return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const yearId = await resolveYear(tx, dto.academicYearId);
       await assertClassAndCampus(tx, dto.classId, dto.campusId);
@@ -95,15 +109,23 @@ export class AdmissionsService {
           guardianEmail: dto.guardianEmail ?? null,
           address: dto.address ?? null,
           notes: dto.notes ?? null,
+          photoKey,
           source,
         },
       });
+      for (const d of extra.documents ?? []) {
+        await tx.document.create({ data: { schoolId, ownerType: 'admission_application', ownerId: app.id, uploadedBy: actorUserId, ...d } });
+      }
+      if (extra.formAnswers?.length) {
+        await tx.admissionAnswer.createMany({ data: extra.formAnswers.map((a, i) => ({ schoolId, applicationId: app.id, ...answerRow(a, i) })) });
+      }
       await tx.admissionStatusHistory.create({ data: { schoolId, applicationId: app.id, fromStatus: null, toStatus: 'submitted', note: source === 'website' ? 'Application received from the school website' : 'Application received', changedBy: actorUserId } });
       return app;
     });
   }
 
-  update(schoolId: string, id: string, dto: ApplicationDto) {
+  async update(schoolId: string, id: string, { photoId, ...dto }: ApplicationDto) {
+    const photoKey = photoId ? await this.photos.claim(schoolId, photoId) : undefined;
     return this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const app = await tx.admissionApplication.findUnique({ where: { id }, select: { status: true } });
       if (!app) throw new NotFoundException('Application not found');
@@ -112,7 +134,7 @@ export class AdmissionsService {
       await assertClassAndCampus(tx, dto.classId, dto.campusId);
       return tx.admissionApplication.update({
         where: { id },
-        data: { ...dto, academicYearId: yearId, dateOfBirth: toDateOnly(dto.dateOfBirth) },
+        data: { ...dto, academicYearId: yearId, dateOfBirth: toDateOnly(dto.dateOfBirth), ...(photoKey && { photoKey }) },
       });
     });
   }
@@ -173,8 +195,25 @@ export class AdmissionsService {
 
         // Siblings: reuse the guardian already registered with this email.
         const existing = app.guardianEmail
-          ? await tx.guardian.findUnique({ where: { schoolId_email: { schoolId, email: app.guardianEmail } }, select: { id: true, userId: true } })
+          ? await tx.guardian.findUnique({ where: { schoolId_email: { schoolId, email: app.guardianEmail } }, select: { id: true, userId: true, occupation: true, nationalId: true, address: true } })
           : null;
+
+        // Answers the school linked to student-record columns go into those columns.
+        const answers = (await tx.admissionAnswer.findMany({ where: { applicationId: id }, orderBy: { position: 'asc' } })).map(answerOf);
+        const v = savedValues(answers);
+        const pick = <T extends Record<string, string | null | undefined>>(o: T) => {
+          const kept = Object.fromEntries(Object.entries(o).filter(([, x]) => x)) as Partial<T>;
+          return Object.keys(kept).length ? kept : undefined;
+        };
+        const profile = pick({ address: app.address, nationalId: v['student.nationalId'], bloodGroup: v['student.bloodGroup'], religion: v['student.religion'], nationality: v['student.nationality'] });
+        const medical = pick({ allergies: v['medical.allergies'], conditions: v['medical.conditions'], medications: v['medical.medications'], doctorName: v['medical.doctorName'], doctorPhone: v['medical.doctorPhone'] });
+        const emergency = v['emergency.name'] && v['emergency.phone'] ? [{ name: v['emergency.name'], relationship: v['emergency.relationship'] ?? 'Emergency contact', phone: v['emergency.phone'] }] : undefined;
+        const previous = app.previousSchool ? [{ schoolName: app.previousSchool, lastClass: v['previousSchool.lastClass'] ?? null, leftOn: v['previousSchool.leftOn'] ?? null, reason: v['previousSchool.reason'] ?? null }] : undefined;
+        if (existing) {
+          // A sibling's parent: fill in what their record is missing, never overwrite it.
+          const fill = pick({ occupation: existing.occupation ? null : v['guardian.occupation'], nationalId: existing.nationalId ? null : v['guardian.nationalId'], address: existing.address ? null : app.address });
+          if (fill) await tx.guardian.update({ where: { id: existing.id }, data: fill });
+        }
 
         const student = await this.students.createInTx(tx, schoolId, {
           firstName: app.firstName,
@@ -182,13 +221,15 @@ export class AdmissionsService {
           gender: app.gender,
           dateOfBirth: app.dateOfBirth.toISOString().slice(0, 10),
           admissionDate: dto.admissionDate ?? new Date().toISOString().slice(0, 10),
-          profile: app.address ? { address: app.address } : undefined,
-          previousSchools: app.previousSchool ? [{ schoolName: app.previousSchool }] : undefined,
+          profile,
+          medical,
+          emergencyContacts: emergency,
+          previousSchools: previous,
           guardians: [
             existing
               ? { guardianId: existing.id, relationship: app.guardianRelation, isPrimary: true }
               : {
-                  details: { firstName: app.guardianFirstName, lastName: app.guardianLastName, phone: app.guardianPhone, email: app.guardianEmail, address: app.address },
+                  details: { firstName: app.guardianFirstName, lastName: app.guardianLastName, phone: app.guardianPhone, email: app.guardianEmail, address: app.address, occupation: v['guardian.occupation'] ?? null, nationalId: v['guardian.nationalId'] ?? null },
                   relationship: app.guardianRelation,
                   isPrimary: true,
                   login: dto.parentLogin,
@@ -197,6 +238,10 @@ export class AdmissionsService {
           enrollment: { academicYearId: app.academicYearId, sectionId: dto.sectionId, rollNo: dto.rollNo },
           login: dto.studentLogin,
         }, logins);
+        // The picture sent with the application becomes the student's profile picture.
+        if (app.photoKey) await tx.student.update({ where: { id: student.id }, data: { photoKey: app.photoKey } });
+        // The application's documents (B-Form, result card, ...) become the student's documents.
+        const movedDocuments = await tx.document.updateMany({ where: { ownerType: 'admission_application', ownerId: id }, data: { ownerType: 'student', ownerId: student.id } });
 
         // Generated logins by role ("usman.tariq.parent@…", "hania.usman.student@…"); a sibling's
         // parent who already has a login keeps it.
@@ -219,7 +264,7 @@ export class AdmissionsService {
 
         await tx.admissionStatusHistory.create({ data: { schoolId, applicationId: id, fromStatus: 'approved', toStatus: 'enrolled', note: `Enrolled as ${student.admissionNo}`, changedBy: actorUserId } });
         await tx.admissionApplication.update({ where: { id }, data: { status: 'enrolled', studentId: student.id } });
-        return { studentId: student.id, admissionNo: student.admissionNo, linkedExistingGuardian: !!existing, credentials, logins };
+        return { studentId: student.id, admissionNo: student.admissionNo, linkedExistingGuardian: !!existing, movedDocuments: movedDocuments.count, savedDetails: Object.keys(v).length, credentials, logins };
       },
       { timeout: 30_000 },
     ).then(async ({ logins, ...rest }) => {

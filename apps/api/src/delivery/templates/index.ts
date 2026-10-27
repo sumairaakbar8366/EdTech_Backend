@@ -27,11 +27,11 @@ export const TEMPLATES = {
   test: define<{ sentBy: string }>({
     channels: ['email', 'sms', 'whatsapp', 'push'],
     render: ({ sentBy }) => ({
-      subject: 'SchoolERP test message',
-      text: `This is a test message from SchoolERP, sent by ${sentBy}. If you received it, delivery on this channel works.`,
+      subject: 'Skool EdTech test message',
+      text: `This is a test message from Skool EdTech, sent by ${sentBy}. If you received it, delivery on this channel works.`,
       html: emailLayout({
         heading: 'Test message',
-        paragraphs: [`This is a test message from SchoolERP, sent by ${sentBy}.`, 'If you received it, email delivery works.'],
+        paragraphs: [`This is a test message from Skool EdTech, sent by ${sentBy}.`, 'If you received it, email delivery works.'],
       }),
     }),
   }),
@@ -42,7 +42,7 @@ export const TEMPLATES = {
     render: ({ name, schoolName, title, body, url }) => ({
       subject: `${title} · ${schoolName}`,
       text: `${schoolName}: ${title}${body ? `\n${body}` : ''}`,
-      html: emailLayout({ heading: title, paragraphs: [`Dear ${name},`, ...(body ? [body] : []), `This is a notification from ${schoolName}.`], action: { label: 'Open SchoolERP', url } }),
+      html: emailLayout({ heading: title, paragraphs: [`Dear ${name},`, ...(body ? [body] : []), `This is a notification from ${schoolName}.`], action: { label: 'Open Skool EdTech', url } }),
       url,
     }),
   }),
@@ -77,7 +77,7 @@ export const TEMPLATES = {
       const lead = `Use this code to ${CODE_PURPOSE[purpose]}${schoolName ? ` at ${schoolName}` : ''}:`;
       const tail = `The code expires in ${minutes} minutes. If you did not ask for it, you can ignore this email.`;
       return {
-        subject: `${code} is your SchoolERP verification code`,
+        subject: `${code} is your Skool EdTech verification code`,
         text: `${lead}\n\n${code}\n\n${tail}`,
         html: emailLayout({ heading: 'Your verification code', paragraphs: [lead], code, footer: tail }),
       };
@@ -94,7 +94,7 @@ export const TEMPLATES = {
         `The link works once and expires in ${minutes} minutes. If you did not ask for this, ignore this email: your password stays the same.`,
       ];
       return {
-        subject: 'Reset your SchoolERP password',
+        subject: 'Reset your Skool EdTech password',
         text: `${p.join('\n\n')}\n\nReset your password: ${url}`,
         html: emailLayout({ heading: 'Reset your password', paragraphs: p, action: { label: 'Choose a new password', url } }),
       };
@@ -143,7 +143,7 @@ export const TEMPLATES = {
     render: ({ name, schoolName, loginId, signInUrl, trialEndsAt, password, provider }) => {
       const p = [
         `Welcome ${name},`,
-        `${schoolName} is ready on SchoolERP. Your free trial includes every feature until ${fmtDate(trialEndsAt)}.`,
+        `${schoolName} is ready on Skool EdTech. Your free trial includes every feature until ${fmtDate(trialEndsAt)}.`,
         password
           ? `Your sign-in details. User ID: ${loginId} · Password: ${password}. Please change the password after you sign in (Profile → Change password).`
           : `Sign in with this email and the password you chose. Your User ID: ${loginId}`,
@@ -206,7 +206,7 @@ export const TEMPLATES = {
           : `The password${loginId ? ` of User ID ${loginId}` : ''} was just changed. All other sessions were signed out.`,
         'If this was not you, contact your school administrator immediately.',
       ];
-      return { subject: 'Your SchoolERP password was changed', text: p.join('\n\n'), html: emailLayout({ heading: 'Password changed', paragraphs: p }) };
+      return { subject: 'Your Skool EdTech password was changed', text: p.join('\n\n'), html: emailLayout({ heading: 'Password changed', paragraphs: p }) };
     },
   }),
 
@@ -216,7 +216,7 @@ export const TEMPLATES = {
     render: (d) => {
       const p = [
         `Hello ${d.name},`,
-        `${d.byOwner ? 'SchoolERP support' : `An administrator at ${d.schoolName}`} reset your password. Your new sign-in details:`,
+        `${d.byOwner ? 'Skool EdTech support' : `An administrator at ${d.schoolName}`} reset your password. Your new sign-in details:`,
         ...(d.email ? [`Email: ${d.email}`] : []),
         `User ID: ${d.loginId}`,
         `Temporary password: ${d.temporaryPassword}`,
@@ -233,7 +233,7 @@ export const TEMPLATES = {
     render: (d) => {
       const p = [
         `Hello ${d.name},`,
-        `Your ${d.schoolName} User ID has changed: every User ID on SchoolERP is now unique.`,
+        `Your ${d.schoolName} User ID has changed: every User ID on Skool EdTech is now unique.`,
         `Old User ID: ${d.oldLoginId}`,
         `New User ID: ${d.newLoginId}`,
         'Your password stays the same. If you sign in with your email, nothing changes for you.',

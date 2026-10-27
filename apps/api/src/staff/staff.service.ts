@@ -1,14 +1,12 @@
-import {
-  BadRequestException,
-  ConflictException,
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
-import { AccountsService, handover } from '../accounts/accounts.service.js';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Logger, type OnApplicationBootstrap } from '@nestjs/common';
+import { AccountsService, handover, type GeneratedLogin } from '../accounts/accounts.service.js';
 import { toDateOnly } from '../common/date-only.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
+import { classify } from '../audit/activity.rules.js';
+import { AuthService } from '../auth/auth.service.js';
+import { LEADER_DESIGNATIONS, closeTenure, ensureLeaderRecord, openTenure, type LeaderRole } from './leader-record.js';
+import { PhotosService } from '../photos/photos.service.js';
 import type {
   ChangeStatusDto,
   CreateEmployeeDto,
@@ -19,6 +17,7 @@ import type {
   StaffLoginDto,
   TeacherProfileDto,
   UpdateEmployeeDto,
+  ReplaceAdminDto,
 } from './staff.dto.js';
 
 const LIVE_SUBSCRIPTION = ['trialing', 'active', 'past_due'] as const;
@@ -27,6 +26,7 @@ const EMPLOYED = ['active', 'on_leave'] as const;
 
 const LIST_SELECT = {
   id: true,
+  photoKey: true,
   employeeNo: true,
   firstName: true,
   lastName: true,
@@ -47,11 +47,112 @@ const LIST_SELECT = {
  * A staff member may optionally have a login with one or more staff roles.
  */
 @Injectable()
-export class StaffService {
+export class StaffService implements OnApplicationBootstrap {
+  private readonly log = new Logger(StaffService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly accounts: AccountsService,
+    private readonly photos: PhotosService,
+    private readonly auth: AuthService,
   ) {}
+
+  /** On start: administrators and principals made before they got staff records get one now. */
+  async onApplicationBootstrap() {
+    try {
+      const schools = await this.prisma.school.findMany({ select: { id: true } });
+      let added = 0;
+      for (const { id } of schools) {
+        added += await this.prisma.inSchoolTransaction(id, async (tx) => {
+          // Every current admin / principal has a staff record and an open service period.
+          const leaders = await tx.user.findMany({
+            where: { NOT: { loginId: { startsWith: 'SUP-' } }, userRoles: { some: { role: { key: { in: ['school_admin', 'principal'] } } } } },
+            select: { id: true, status: true, employee: { select: { id: true } }, userRoles: { select: { role: { select: { key: true } } } } },
+          });
+          let made = 0;
+          for (const u of leaders) {
+            if (!u.employee) made++;
+            const keys = u.userRoles.map((r) => r.role.key).filter((k): k is LeaderRole => k === 'school_admin' || k === 'principal');
+            for (const k of keys) {
+              await ensureLeaderRecord(tx, id, u.id, k);
+              if (u.status === 'disabled') await closeTenure(tx, id, u.id, { action: 'suspended', role: k, reason: 'Login was disabled before service records were kept' });
+            }
+          }
+          return made;
+        });
+      }
+      if (added) this.log.log(`staff records created for ${added} administrator(s) / principal(s)`);
+    } catch (e) {
+      this.log.error(`administrator staff records failed: ${(e as Error).message}`);
+    }
+  }
+
+  /**
+   * The principal's list of every administrator and principal, current and former (they keep their
+   * staff record after leaving): role, status, joining and leaving dates.
+   */
+  async administration(schoolId: string) {
+    const rows = await this.prisma.forSchool(schoolId).employee.findMany({
+      // By role (current, and former whose login keeps the role) or by the designation their record was made with.
+      where: { OR: [{ designation: { in: [...LEADER_DESIGNATIONS] } }, { user: { userRoles: { some: { role: { key: { in: ['school_admin', 'principal'] } } } } } }] },
+      orderBy: [{ status: 'asc' }, { joinDate: 'desc' }],
+      select: {
+        id: true, employeeNo: true, firstName: true, lastName: true, email: true, phone: true, designation: true, status: true, joinDate: true, photoKey: true,
+        user: { select: { loginId: true, status: true, lastLoginAt: true, userRoles: { select: { role: { select: { key: true, name: true } } } } } },
+        statusHistory: { where: { toStatus: { in: ['resigned', 'terminated'] } }, orderBy: { changedAt: 'desc' }, take: 1, select: { toStatus: true, reason: true, changedAt: true } },
+      },
+    });
+    return rows.map(({ statusHistory, user, ...e }) => ({
+      ...e,
+      loginId: user?.loginId ?? null,
+      loginStatus: user?.status ?? null,
+      lastLoginAt: user?.lastLoginAt ?? null,
+      roles: user?.userRoles.map((r) => r.role.name) ?? [],
+      left: e.status === 'resigned' || e.status === 'terminated' ? statusHistory[0] ?? null : null,
+    }));
+  }
+
+  /**
+   * Service record of a staff member who is or was School Admin / Principal: each period in the role
+   * (from, to, how it ended, who took over) and, academic year by academic year, what they did:
+   * sign-ins, changes and the risky ones, by area. Read from the logs, which are never deleted with them.
+   */
+  async serviceRecord(schoolId: string, employeeId: string) {
+    const db = this.prisma.forSchool(schoolId);
+    const e = await db.employee.findUnique({ where: { id: employeeId }, select: { id: true, userId: true, joinDate: true, status: true } });
+    if (!e) throw new NotFoundException('Staff member not found');
+    const [tenures, years, changes, signins, history] = await Promise.all([
+      db.leadershipTenure.findMany({ where: { OR: [{ employeeId }, ...(e.userId ? [{ userId: e.userId }] : [])] }, orderBy: { startedAt: 'desc' } }),
+      db.academicYear.findMany({ select: { name: true, startDate: true, endDate: true }, orderBy: { startDate: 'desc' } }),
+      e.userId ? db.auditLog.findMany({ where: { actorId: e.userId }, select: { createdAt: true, entity: true, action: true, method: true, path: true }, take: 50_000 }) : [],
+      e.userId ? this.prisma.loginEvent.findMany({ where: { schoolId, userId: e.userId }, select: { createdAt: true, success: true }, take: 50_000 }) : [],
+      db.employeeStatusHistory.findMany({ where: { employeeId }, orderBy: { changedAt: 'desc' }, select: { fromStatus: true, toStatus: true, reason: true, changedAt: true } }),
+    ]);
+    const yearOf = (d: Date) => years.find((y) => d >= y.startDate && d <= new Date(y.endDate.getTime() + 86_399_999))?.name ?? String(d.getUTCFullYear());
+    const buckets = new Map<string, { signins: number; failedSignins: number; changes: number; risky: number; areas: Map<string, number>; last: Date | null }>();
+    const bucket = (d: Date) => {
+      const k = yearOf(d);
+      if (!buckets.has(k)) buckets.set(k, { signins: 0, failedSignins: 0, changes: 0, risky: 0, areas: new Map(), last: null });
+      const b = buckets.get(k)!;
+      if (!b.last || d > b.last) b.last = d;
+      return b;
+    };
+    for (const s of signins) { const b = bucket(s.createdAt); if (s.success) b.signins++; else b.failedSignins++; }
+    for (const c of changes) {
+      const b = bucket(c.createdAt);
+      b.changes++;
+      if (classify(c).level === 'critical') b.risky++;
+      b.areas.set(c.entity, (b.areas.get(c.entity) ?? 0) + 1);
+    }
+    const order = (k: string) => years.findIndex((y) => y.name === k);
+    return {
+      tenures,
+      history,
+      years: [...buckets.entries()]
+        .sort(([a, x], [b, y]) => (order(a) >= 0 && order(b) >= 0 ? order(a) - order(b) : (y.last?.getTime() ?? 0) - (x.last?.getTime() ?? 0)))
+        .map(([label, b]) => ({ label, signins: b.signins, failedSignins: b.failedSignins, changes: b.changes, risky: b.risky, lastActive: b.last, areas: [...b.areas.entries()].sort((p, q) => q[1] - p[1]).slice(0, 6).map(([area, count]) => ({ area, count })) })),
+    };
+  }
 
   async list(schoolId: string, q: ListEmployeesQuery) {
     const where: Prisma.EmployeeWhereInput = {
@@ -127,6 +228,7 @@ export class StaffService {
 
   async create(schoolId: string, dto: CreateEmployeeDto, actorUserId: string) {
     const created = await this.prisma.inSchoolTransaction(schoolId, (tx) => this.createInTx(tx, schoolId, dto, actorUserId));
+    if (dto.photoId) await this.photos.setFor(schoolId, 'employee', created.id, dto.photoId);
     // Like every other new login: the person is emailed their User ID (after the commit).
     if (created.login) await this.accounts.announce(schoolId, [created.login]);
     return created;
@@ -221,6 +323,10 @@ export class StaffService {
 
       const leaving = dto.status === 'resigned' || dto.status === 'terminated';
       const returning = !leaving && (current.status === 'resigned' || current.status === 'terminated');
+      if (leaving && current.userId) {
+        await assertNotLastAdmin(tx, current.userId);
+        await closeTenure(tx, schoolId, current.userId, { action: dto.status as 'resigned' | 'terminated', reason: dto.reason, endedByUserId: actorUserId });
+      }
       if (returning) await assertStaffCapacity(tx, schoolId);
       if (leaving && current.userId === actorUserId) {
         throw new ForbiddenException('You cannot end your own employment');
@@ -234,6 +340,73 @@ export class StaffService {
       });
       return tx.employee.update({ where: { id }, data: { status: dto.status } });
     });
+  }
+
+  /**
+   * Replaces a School Admin in one step, so the school is never left without one: the new admin is
+   * made first (the principal themself, an existing staff member, or someone new by email), then the
+   * old admin is suspended (login closed) or leaves. All school data stays; the new admin sees it all.
+   * Only the principal or a School Admin may do this.
+   */
+  async replaceAdmin(schoolId: string, leavingId: string, dto: ReplaceAdminDto, actorUserId: string) {
+    const result = await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+      const actor = await tx.user.findUnique({ where: { id: actorUserId }, select: { userRoles: { select: { role: { select: { key: true } } } } } });
+      if (!actor?.userRoles.some((r) => r.role.key === 'principal' || r.role.key === 'school_admin')) throw new ForbiddenException('Only the principal or a School Admin can replace an admin');
+      const leaving = await tx.employee.findUnique({ where: { id: leavingId }, select: { id: true, userId: true, status: true, firstName: true, lastName: true } });
+      if (!leaving?.userId) throw new NotFoundException('Administrator not found');
+      if (leaving.userId === actorUserId) throw new BadRequestException('You cannot replace yourself; ask the principal or another admin');
+      const adminRole = await tx.role.findFirstOrThrow({ where: { key: 'school_admin', isSystem: true }, select: { id: true } });
+
+      // 1. The new admin.
+      let newUserId: string;
+      let login: GeneratedLogin | null = null;
+      if (dto.newAdmin.mode === 'self') {
+        newUserId = actorUserId;
+      } else if (dto.newAdmin.mode === 'staff') {
+        const e = dto.newAdmin.employeeId ? await tx.employee.findUnique({ where: { id: dto.newAdmin.employeeId }, select: { id: true, userId: true, firstName: true, lastName: true, email: true, phone: true, status: true, joinDate: true } }) : null;
+        if (!e || !EMPLOYED.includes(e.status as never)) throw new BadRequestException('Choose a current staff member');
+        if (e.id === leaving.id) throw new BadRequestException('Choose someone else as the new admin');
+        if (e.userId) {
+          newUserId = e.userId;
+          await tx.user.update({ where: { id: e.userId }, data: { status: 'active' } });
+        } else {
+          if (!e.email) throw new BadRequestException(`${e.firstName} ${e.lastName} needs an email address on their staff record first`);
+          login = await this.accounts.createLogin(tx, schoolId, { firstName: e.firstName, lastName: e.lastName, phone: e.phone, email: e.email, year: e.joinDate.getUTCFullYear() }, ['school_admin']);
+          await tx.employee.update({ where: { id: e.id }, data: { userId: login.userId } });
+          newUserId = login.userId;
+        }
+      } else {
+        const { firstName, lastName, email } = dto.newAdmin;
+        if (!firstName || !lastName || !email) throw new BadRequestException('Enter the new admin\'s name and email');
+        login = await this.accounts.createLogin(tx, schoolId, { firstName, lastName, email }, ['school_admin']);
+        newUserId = login.userId;
+      }
+      await tx.userRole.upsert({ where: { userId_roleId: { userId: newUserId, roleId: adminRole.id } }, create: { userId: newUserId, roleId: adminRole.id, schoolId }, update: {} });
+      // Their service period as School Admin starts today.
+      await openTenure(tx, schoolId, newUserId, 'school_admin', new Date());
+      await ensureLeaderRecord(tx, schoolId, newUserId, 'school_admin');
+
+      // 2. The old admin: their service period ends (kept for good), then suspended or leaving. Their work all stays.
+      const successor = await tx.user.findUnique({ where: { id: newUserId }, select: { firstName: true, lastName: true, loginId: true } });
+      await closeTenure(tx, schoolId, leaving.userId, {
+        action: dto.action === 'suspend' ? 'suspended' : dto.action,
+        reason: dto.reason ?? 'Replaced as School Admin',
+        replacedByName: successor ? `${successor.firstName} ${successor.lastName} (${successor.loginId})` : null,
+        endedByUserId: actorUserId,
+        role: 'school_admin',
+      });
+      if (dto.action === 'suspend') {
+        await tx.user.update({ where: { id: leaving.userId }, data: { status: 'disabled' } });
+      } else {
+        await tx.user.update({ where: { id: leaving.userId }, data: { status: 'disabled' } });
+        await tx.employeeStatusHistory.create({ data: { schoolId, employeeId: leaving.id, fromStatus: leaving.status, toStatus: dto.action, reason: dto.reason ?? 'Replaced as School Admin', changedBy: actorUserId } });
+        await tx.employee.update({ where: { id: leaving.id }, data: { status: dto.action } });
+      }
+      return { leavingUserId: leaving.userId, login };
+    });
+    await this.auth.endSessions(schoolId, result.leavingUserId);
+    if (result.login) await this.accounts.announce(schoolId, [result.login]);
+    return { ok: true, credentials: result.login ? handover(result.login) : null };
   }
 
   /** Gives an existing staff member a login. */
@@ -296,7 +469,7 @@ export class StaffService {
 
 // --- helpers ------------------------------------------------------------------
 
-async function lock(tx: TenantTx, key: string): Promise<void> {
+export async function lock(tx: TenantTx, key: string): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
 }
 
@@ -321,8 +494,16 @@ async function assertStaffCapacity(tx: TenantTx, schoolId: string): Promise<void
   }
 }
 
+/** A school always keeps an active School Admin: replace one (POST /staff/:id/replace-admin) before they leave. */
+async function assertNotLastAdmin(tx: TenantTx, userId: string): Promise<void> {
+  const isAdmin = await tx.userRole.count({ where: { userId, role: { key: 'school_admin' } } });
+  if (!isAdmin) return;
+  const others = await tx.user.count({ where: { id: { not: userId }, status: 'active', NOT: { loginId: { startsWith: 'SUP-' } }, userRoles: { some: { role: { key: 'school_admin' } } } } });
+  if (!others) throw new BadRequestException('This is the only School Admin. Add a new admin first (Replace admin).');
+}
+
 /** Next number in the EMP-0001 series (gaps from manual numbers are fine). */
-async function nextEmployeeNo(tx: TenantTx): Promise<string> {
+export async function nextEmployeeNo(tx: TenantTx): Promise<string> {
   const rows = await tx.employee.findMany({ where: { employeeNo: { startsWith: 'EMP-' } }, select: { employeeNo: true } });
   const max = rows.reduce((m, r) => Math.max(m, Number(r.employeeNo.slice(4)) || 0), 0);
   return `EMP-${String(max + 1).padStart(4, '0')}`;

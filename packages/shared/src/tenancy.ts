@@ -10,6 +10,7 @@ export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   'help', 'support', 'status', 'billing', 'platform', 'auth', 'login', 'dashboard', 'dev',
   'staging', 'test', 'demo-admin', 'root', 'system',
   'console', 'access', 'signup', 'sso', 'pay', 'welcome', 'logout', 'images', 'src', 'node_modules',
+  'guide', 'tour', 'media',
 ]);
 
 export function isValidSchoolSlug(slug: string): boolean {

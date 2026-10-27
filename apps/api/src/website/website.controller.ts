@@ -5,7 +5,8 @@ import type { Response } from 'express';
 import { memoryStorage } from 'multer';
 import { CurrentAuth, Public, RequireAccess } from '../auth/decorators.js';
 import type { AppRequest, AuthContext } from '../common/request-context.js';
-import { MediaUploadDto, PublicAdmissionDto, PublicCareerDto, WebsiteDto, WebsiteService } from './website.service.js';
+import { AdmissionFormDto } from '../admissions/admission-form.js';
+import { MAX_APPLICATION_FILE_BYTES, MediaUploadDto, PublicAdmissionDto, PublicCareerDto, WebsiteDto, WebsiteService } from './website.service.js';
 
 type SchoolAuth = Extract<AuthContext, { scope: 'school' }>;
 const Manage = () => RequireAccess('settings', ['crud']);
@@ -28,6 +29,17 @@ export class WebsiteAdminController {
   @Manage() @Put()
   update(@CurrentAuth() a: SchoolAuth, @Body() dto: WebsiteDto) {
     return this.website.update(a.schoolId, dto);
+  }
+
+  /** The school's online admission form: standard fields shown/required, and its own fields. */
+  @Manage() @Get('admission-form')
+  admissionForm(@CurrentAuth() a: SchoolAuth) {
+    return this.website.admissionForm(a.schoolId);
+  }
+
+  @Manage() @Put('admission-form')
+  saveAdmissionForm(@CurrentAuth() a: SchoolAuth, @Body() dto: AdmissionFormDto) {
+    return this.website.saveAdmissionForm(a.schoolId, dto);
   }
 
   @Manage() @Post('media')
@@ -66,6 +78,15 @@ export class WebsitePublicController {
   @Post('admissions')
   admission(@Req() req: AppRequest, @Body() dto: PublicAdmissionDto) {
     return this.website.applyForAdmission(schoolOf(req), dto);
+  }
+
+  /** A document for the admission form, uploaded before the form is sent (one per request). */
+  @Public() @UseGuards(ThrottlerGuard) @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  @Post('admission-files')
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: MAX_APPLICATION_FILE_BYTES + 1024, files: 1 } }))
+  admissionFile(@Req() req: AppRequest, @UploadedFile() file?: Express.Multer.File) {
+    if (!file) throw new BadRequestException('Attach the document in the "file" field');
+    return this.website.stageApplicationFile(schoolOf(req), file);
   }
 
   @Public() @UseGuards(ThrottlerGuard) @Throttle({ default: { limit: 5, ttl: 60_000 } })

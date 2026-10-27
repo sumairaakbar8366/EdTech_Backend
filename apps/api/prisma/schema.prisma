@@ -28,6 +28,11 @@ model PlatformAdmin {
   passwordHash String    @map("password_hash")
   name         String
   isActive     Boolean   @default(true) @map("is_active")
+  /// The main owner: adds or removes other owners and edits / deletes logs. Others are "Owner 2", "Owner 3"…
+  isPrimary    Boolean   @default(false) @map("is_primary")
+  /// e.g. "Owner 2"; null for the main owner.
+  label        String?
+  createdById  String?   @map("created_by_id") @db.Uuid
   lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(3)
   createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -242,6 +247,7 @@ model School {
   documents                Document[]
 
   admissionApplications  AdmissionApplication[]
+  admissionAnswers       AdmissionAnswer[]
   admissionInterviews    AdmissionInterview[]
   admissionStatusHistory AdmissionStatusHistory[]
 
@@ -306,6 +312,9 @@ model School {
   applicationStatusHistory ApplicationStatusHistory[]
   pushSubscriptions        PushSubscription[]
   reportCardChanges        ReportCardChange[]
+  photoChangeRequests      PhotoChangeRequest[]
+  leadershipTenures        LeadershipTenure[]
+  photoFingerprints        PhotoFingerprint[]
 
   @@map("schools")
 }
@@ -397,6 +406,8 @@ enum UserStatus {
 model User {
   id                 String     @id @default(uuid(7)) @db.Uuid
   schoolId           String     @map("school_id") @db.Uuid
+  /// Profile picture (storage id under the school), served by GET /api/photos/<id>.
+  photoKey           String?    @map("photo_key") @db.Uuid
   /// Structured sign-in ID, e.g. "TCH-2026-0007". Issued once from login_ids; a trigger refuses changes.
   /// Unique on the whole platform (one counter per prefix and year for every school).
   loginId            String     @unique(map: "users_login_id_key") @map("login_id")
@@ -727,6 +738,8 @@ enum Gender {
 model Employee {
   id             String         @id @default(uuid(7)) @db.Uuid
   schoolId       String         @map("school_id") @db.Uuid
+  /// Profile picture (storage id under the school), served by GET /api/photos/<id>.
+  photoKey       String?        @map("photo_key") @db.Uuid
   campusId       String         @map("campus_id") @db.Uuid
   userId         String?        @unique @map("user_id") @db.Uuid
   employeeNo     String         @map("employee_no")
@@ -960,6 +973,8 @@ model JobPost {
 model JobApplication {
   id                   String            @id @default(uuid(7)) @db.Uuid
   schoolId             String            @map("school_id") @db.Uuid
+  /// Profile picture (storage id under the school), served by GET /api/photos/<id>.
+  photoKey             String?           @map("photo_key") @db.Uuid
   /// "office" (entered by staff) or "website" (submitted on the school's public site).
   source               String            @default("office")
   jobPostId            String            @map("job_post_id") @db.Uuid
@@ -1089,6 +1104,8 @@ enum EnrollmentStatus {
 model Student {
   id            String        @id @default(uuid(7)) @db.Uuid
   schoolId      String        @map("school_id") @db.Uuid
+  /// Profile picture (storage id under the school), served by GET /api/photos/<id>.
+  photoKey      String?       @map("photo_key") @db.Uuid
   userId        String?       @unique @map("user_id") @db.Uuid
   admissionNo   String        @map("admission_no")
   firstName     String        @map("first_name")
@@ -1156,6 +1173,8 @@ model StudentProfile {
 model Guardian {
   id         String   @id @default(uuid(7)) @db.Uuid
   schoolId   String   @map("school_id") @db.Uuid
+  /// Profile picture (storage id under the school), served by GET /api/photos/<id>.
+  photoKey   String?  @map("photo_key") @db.Uuid
   userId     String?  @unique @map("user_id") @db.Uuid
   firstName  String   @map("first_name")
   lastName   String   @map("last_name")
@@ -1346,6 +1365,8 @@ enum AdmissionAssessmentResult {
 model AdmissionApplication {
   id                String           @id @default(uuid(7)) @db.Uuid
   schoolId          String           @map("school_id") @db.Uuid
+  /// Profile picture (storage id under the school), served by GET /api/photos/<id>.
+  photoKey          String?          @map("photo_key") @db.Uuid
   /// "office" (entered by staff) or "website" (submitted on the school's public site).
   source            String           @default("office")
   applicationNo     String           @map("application_no")
@@ -1377,6 +1398,7 @@ model AdmissionApplication {
   student       Student?                 @relation(fields: [studentId, schoolId], references: [id, schoolId], onDelete: Restrict)
   assessments   AdmissionInterview[]
   statusHistory AdmissionStatusHistory[]
+  answers       AdmissionAnswer[]
 
   @@unique([schoolId, applicationNo])
   @@unique([studentId, schoolId])
@@ -1384,6 +1406,39 @@ model AdmissionApplication {
   @@index([schoolId, status])
   @@index([academicYearId, classId])
   @@map("admission_applications")
+}
+
+/// One answer to a school's own admission form field (admissions/admission-form.ts). The label, type
+/// and target are copied, so later changes to the form never change what the applicant answered.
+/// Each kind of value has its own typed column.
+model AdmissionAnswer {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  schoolId      String    @map("school_id") @db.Uuid
+  applicationId String    @map("application_id") @db.Uuid
+  fieldId       String    @map("field_id")
+  position      Int
+  label         String
+  /// text | textarea | number | email | phone | date | select | multiselect | checkbox | file
+  type          String
+  /// student | guardian | additional | documents
+  section       String
+  /// Student-record column enrollment copies the answer to (e.g. "student.nationalId"), if any.
+  saveTo        String?   @map("save_to")
+  valueText     String?   @map("value_text")
+  valueNumber   Float?    @map("value_number")
+  valueDate     DateTime? @map("value_date") @db.Date
+  valueBool     Boolean?  @map("value_bool")
+  valueList     String[]  @default([]) @map("value_list")
+  /// The uploaded document (file answers); it moves to the student's documents on enrollment.
+  documentId    String?   @map("document_id") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school      School               @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  application AdmissionApplication @relation(fields: [applicationId, schoolId], references: [id, schoolId], onDelete: Cascade)
+
+  @@unique([applicationId, fieldId])
+  @@index([schoolId])
+  @@map("admission_answers")
 }
 
 /// Interview or entrance test for an application.
@@ -2507,14 +2562,16 @@ model Notification {
 
 /// A school-wide message to one or more roles (page 11 entity: title, body, target_roles, published_at).
 model Announcement {
-  id          String   @id @default(uuid(7)) @db.Uuid
-  schoolId    String   @map("school_id") @db.Uuid
-  title       String
-  body        String
-  /// School role keys; empty means everyone.
-  targetRoles String[] @map("target_roles")
-  createdBy   String?  @map("created_by") @db.Uuid
-  publishedAt DateTime @default(now()) @map("published_at") @db.Timestamptz(3)
+  id            String   @id @default(uuid(7)) @db.Uuid
+  schoolId      String   @map("school_id") @db.Uuid
+  title         String
+  body          String
+  /// School role keys. With targetUserIds also empty, the announcement goes to everyone.
+  targetRoles   String[] @map("target_roles")
+  /// Individual people picked by name, on top of any roles.
+  targetUserIds String[] @default([]) @map("target_user_ids") @db.Uuid
+  createdBy     String?  @map("created_by") @db.Uuid
+  publishedAt   DateTime @default(now()) @map("published_at") @db.Timestamptz(3)
 
   school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
 
@@ -2590,6 +2647,9 @@ model AuditLog {
   method    String
   path      String
   ip        String?
+  /// Set when the main admin or owner edits the entry in the activity monitor.
+  title     String?
+  note      String?
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
@@ -2597,6 +2657,101 @@ model AuditLog {
   @@index([schoolId, createdAt(sort: Desc)])
   @@index([schoolId, entity])
   @@map("audit_logs")
+}
+
+enum PhotoRequestStatus {
+  pending
+  approved
+  rejected
+
+  @@map("photo_request_status")
+}
+
+/// A student or staff member asking to change their profile picture; an admin approves it. RLS-protected.
+model PhotoChangeRequest {
+  id          String             @id @default(uuid(7)) @db.Uuid
+  schoolId    String             @map("school_id") @db.Uuid
+  userId      String             @map("user_id") @db.Uuid
+  /// student | employee
+  subjectType String             @map("subject_type")
+  subjectId   String             @map("subject_id") @db.Uuid
+  photoKey    String             @map("photo_key") @db.Uuid
+  status      PhotoRequestStatus @default(pending)
+  note        String?
+  reviewedBy  String?            @map("reviewed_by") @db.Uuid
+  reviewedAt  DateTime?          @map("reviewed_at") @db.Timestamptz(3)
+  createdAt   DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, status, createdAt(sort: Desc)])
+  @@map("photo_change_requests")
+}
+
+/**
+ * One period as School Admin or Principal: from when to when, how it ended and who took over. Kept for
+ * good (the person's work stays in the audit log); the principal reads it as their service record.
+ * RLS-protected.
+ */
+model LeadershipTenure {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  schoolId       String    @map("school_id") @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  employeeId     String?   @map("employee_id") @db.Uuid
+  /// school_admin | principal
+  role           String
+  /// Name, User ID and email as they were, so the record reads the same later.
+  name           String
+  loginId        String    @map("login_id")
+  email          String?
+  startedAt      DateTime  @map("started_at") @db.Timestamptz(3)
+  endedAt        DateTime? @map("ended_at") @db.Timestamptz(3)
+  /// suspended | resigned | terminated | role_removed
+  endAction      String?   @map("end_action")
+  endReason      String?   @map("end_reason")
+  replacedByName String?   @map("replaced_by_name")
+  endedByName    String?   @map("ended_by_name")
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, userId])
+  @@map("leadership_tenures")
+}
+
+/// Fingerprint of every profile picture, so the same (or a near-identical) picture is never used for
+/// two people. RLS-protected.
+model PhotoFingerprint {
+  photoKey  String   @id @map("photo_key") @db.Uuid
+  schoolId  String   @map("school_id") @db.Uuid
+  /// SHA-256 of the file: the exact same file.
+  sha256    String
+  /// 64-bit difference hash (hex): the same picture resized, re-saved or slightly edited.
+  dhash     String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, sha256])
+  @@map("photo_fingerprints")
+}
+
+/// Changes made in the owner console (by the main owner or a shared owner account, "Owner 2"…).
+model PlatformAuditLog {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  adminId   String?  @map("admin_id") @db.Uuid
+  actorName String?  @map("actor_name")
+  action    String
+  entity    String
+  method    String
+  path      String
+  ip        String?
+  title     String?
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([createdAt(sort: Desc)])
+  @@map("platform_audit_logs")
 }
 
 // --- Staff tasks (page 4: non-teaching staff "Assigned Tasks") -----------------------------
@@ -2786,6 +2941,12 @@ model SchoolWebsite {
   admissionsOpen   Boolean  @default(true) @map("admissions_open")
   careersOpen      Boolean  @default(true) @map("careers_open")
   heroMediaId      String?  @map("hero_media_id") @db.Uuid
+  /// The school's online admission form (fields, required flags, class filters); null = the default form.
+  admissionForm    Json?    @map("admission_form")
+  /// Show the class fee structures (Finance) on the website and the admission form.
+  feesPublic       Boolean  @default(false) @map("fees_public")
+  /// Shown with the fees, e.g. sibling discounts or payment terms.
+  feeNote          String?  @map("fee_note")
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
@@ -3077,6 +3238,9 @@ model LoginEvent {
   reason          String?
   ip              String?
   userAgent       String?  @map("user_agent")
+  /// Set when the main admin or owner edits the entry in the activity monitor.
+  title           String?
+  note            String?
   createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   school School? @relation(fields: [schoolId], references: [id], onDelete: Cascade)

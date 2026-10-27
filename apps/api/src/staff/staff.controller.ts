@@ -11,6 +11,7 @@ import {
   QualificationDto,
   StaffLoginDto,
   UpdateEmployeeDto,
+  ReplaceAdminDto,
 } from './staff.dto.js';
 import { StaffService } from './staff.service.js';
 import { TeacherAssignmentsService } from './teacher-assignments.service.js';
@@ -33,9 +34,21 @@ export class StaffController {
     return this.staff.summary(a.schoolId);
   }
 
+  /** Every administrator and principal, current and former (the principal's records). */
+  @RequireAccess('staff', ['crud', 'view']) @Get('administration')
+  administration(@CurrentAuth() a: SchoolAuth) {
+    return this.staff.administration(a.schoolId);
+  }
+
   @RequireAccess('staff', ['crud', 'view', 'own']) @Get('me')
   me(@CurrentAuth() a: SchoolAuth) {
     return this.staff.getOwn(a.schoolId, a.userId);
+  }
+
+  /** Periods as School Admin / Principal and their work year by year. */
+  @RequireAccess('staff', ['crud', 'view']) @Get(':id/service-record')
+  serviceRecord(@CurrentAuth() a: SchoolAuth, @Param('id', Id()) id: string) {
+    return this.staff.serviceRecord(a.schoolId, id);
   }
 
   @RequireAccess('staff', ['crud', 'view']) @Get(':id')
@@ -56,6 +69,12 @@ export class StaffController {
   @RequireAccess('staff', ['crud']) @Post(':id/status') @HttpCode(HttpStatus.OK)
   changeStatus(@CurrentAuth() a: SchoolAuth, @Param('id', Id()) id: string, @Body() dto: ChangeStatusDto) {
     return this.staff.changeStatus(a.schoolId, id, dto, a.userId);
+  }
+
+  /** Principal or School Admin: make a new School Admin, then suspend / release this one. */
+  @RequireAccess('staff', ['crud']) @Post(':id/replace-admin') @HttpCode(HttpStatus.OK)
+  replaceAdmin(@CurrentAuth() a: SchoolAuth, @Param('id', Id()) id: string, @Body() dto: ReplaceAdminDto) {
+    return this.staff.replaceAdmin(a.schoolId, id, dto, a.userId);
   }
 
   @RequireAccess('staff', ['crud']) @Post(':id/login')

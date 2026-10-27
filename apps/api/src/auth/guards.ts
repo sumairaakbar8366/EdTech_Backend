@@ -5,10 +5,14 @@ import {
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { hasAccess } from '@schoolerp/shared';
 import type { AppRequest } from '../common/request-context.js';
+import type { Env } from '../config/env.js';
+import { PrismaService } from '../prisma/prisma.service.js';
+import { RedisService } from '../redis/redis.service.js';
 import { PermissionService } from '../rbac/permission.service.js';
 import {
   ALLOW_PENDING_PASSWORD,
@@ -24,12 +28,42 @@ import type { AccessTokenPayload } from './auth.service.js';
  * The access token must belong to the tenant the request was made to: a school
  * token only works on that school's host, a platform token only on the platform host.
  */
+/** A verified login is remembered briefly so not every request reads the database. */
+export const emailOkKey = (schoolId: string, userId: string) => `schoolerp:email-ok:${schoolId}:${userId}`;
+
 @Injectable()
 export class AuthGuard implements CanActivate {
+  private readonly emailCheckOff: boolean;
+
   constructor(
     private readonly reflector: Reflector,
     private readonly jwt: JwtService,
-  ) {}
+    private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
+    config: ConfigService<Env, true>,
+  ) {
+    this.emailCheckOff = config.get('EMAIL_VERIFICATION', { infer: true }) === 'off';
+  }
+
+  /**
+   * No access until the person has confirmed their own email with the emailed code (OTP). Only
+   * signing-in steps work before that (change password, send / check the code, who am I). Students
+   * without an email of their own (they sign in with their User ID) and owner support sessions are
+   * exempt.
+   */
+  private async assertEmailVerified(schoolId: string, userId: string) {
+    if (this.emailCheckOff) return;
+    const key = emailOkKey(schoolId, userId);
+    if (await this.redis.get(key)) return;
+    const user = await this.prisma.forSchool(schoolId).user.findUnique({
+      where: { id: userId },
+      select: { email: true, emailVerifiedAt: true, userRoles: { select: { role: { select: { key: true } } } } },
+    });
+    if (!user) throw new UnauthorizedException();
+    const studentWithoutEmail = !user.email && user.userRoles.length > 0 && user.userRoles.every((r) => r.role.key === 'student');
+    if (!user.emailVerifiedAt && !studentWithoutEmail) throw new ForbiddenException('Please verify your email with the code we sent before using your account');
+    await this.redis.set(key, '1', 'EX', 600);
+  }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [
@@ -58,6 +92,8 @@ export class AuthGuard implements CanActivate {
       if (payload.pwc && !this.reflector.getAllAndOverride<boolean>(ALLOW_PENDING_PASSWORD, [context.getHandler(), context.getClass()])) {
         throw new ForbiddenException('Please change your password to continue');
       }
+      const setupStep = this.reflector.getAllAndOverride<boolean>(ALLOW_PENDING_PASSWORD, [context.getHandler(), context.getClass()]);
+      if (!payload.sup && !setupStep) await this.assertEmailVerified(tenant.schoolId, payload.sub);
       req.auth = { scope: 'school', userId: payload.sub, schoolId: tenant.schoolId, ...(payload.sup && { support: { adminId: payload.sup, name: payload.supn ?? 'Platform owner' } }) };
       return true;
     }

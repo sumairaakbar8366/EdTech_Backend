@@ -11,11 +11,13 @@ import { SignupService } from './signup/signup.service.js';
 import { ConsoleController } from './console/console.controller.js';
 import { ConsoleService } from './console/console.service.js';
 import { PlatformSiteController, PublicSiteController } from './site/site.controller.js';
+import { TeamController } from './team/team.controller.js';
+import { TeamService } from './team/team.service.js';
 
 @Module({
   imports: [AuthModule],
-  controllers: [SchoolsController, TiersController, SchoolApplicationsController, SystemController, SignupController, ConsoleController, PublicSiteController, PlatformSiteController],
-  providers: [SchoolProvisioningService, TiersService, SignupService, ConsoleService],
+  controllers: [SchoolsController, TiersController, SchoolApplicationsController, SystemController, SignupController, ConsoleController, PublicSiteController, PlatformSiteController, TeamController],
+  providers: [SchoolProvisioningService, TiersService, SignupService, ConsoleService, TeamService],
   exports: [SchoolProvisioningService],
 })
 export class PlatformModule {}

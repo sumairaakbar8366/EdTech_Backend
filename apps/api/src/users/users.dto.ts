@@ -1,6 +1,7 @@
 import { Transform, Type } from 'class-transformer';
 import { ArrayMinSize, ArrayUnique, IsArray, IsEmail, IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, Max, MaxLength, Min, ValidateIf, ValidateNested } from 'class-validator';
 import { SCHOOL_ROLE_KEYS, type SchoolRoleKey } from '@schoolerp/shared';
+import { SHAREABLE_ACCESS } from './delegates.js';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
 
@@ -60,4 +61,23 @@ export class SetRolesDto {
 
 export class SetStatusDto {
   @IsIn(USER_STATUSES) status: (typeof USER_STATUSES)[number];
+}
+
+/** One area of the school a shared admin may use, and how (from SHAREABLE_ACCESS). */
+export class SharedAccessItem {
+  @IsIn(Object.keys(SHAREABLE_ACCESS)) module: string;
+  @IsString() @IsIn([...new Set(Object.values(SHAREABLE_ACCESS).flat())]) level: string;
+}
+
+/** The admin shares part of their work with someone by email: they become "Admin 2", "Admin 3"… */
+export class ShareAccessDto {
+  @Transform(trim) @IsString() @MaxLength(80) @Matches(/\S/) firstName: string;
+  @Transform(trim) @IsString() @MaxLength(80) @Matches(/\S/) lastName: string;
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value)) @IsEmail() @MaxLength(254) email: string;
+  @IsOptional() @ValidateNested() @Type(() => EmailProofDto) verification?: EmailProofDto;
+  @IsArray() @ArrayMinSize(1) @ValidateNested({ each: true }) @Type(() => SharedAccessItem) access: SharedAccessItem[];
+}
+
+export class UpdateSharedAccessDto {
+  @IsArray() @ArrayMinSize(1) @ValidateNested({ each: true }) @Type(() => SharedAccessItem) access: SharedAccessItem[];
 }

@@ -8,9 +8,12 @@ import { DeliveryService } from '../delivery/delivery.service.js';
 import { WebUrls } from '../delivery/web-urls.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
-import type { CandidatesQuery, EmailProofDto, GrantAccessDto, ListUsersQuery, PersonType, SetEmailDto } from './users.dto.js';
+import { closeTenure, ensureLeaderRecord, openTenure } from '../staff/leader-record.js';
+import { permissionKey, type AccessLevel, type Module } from '@schoolerp/shared';
+import { DELEGATE_PREFIX, SHAREABLE_ACCESS } from './delegates.js';
+import type { CandidatesQuery, EmailProofDto, GrantAccessDto, ListUsersQuery, PersonType, SetEmailDto, SharedAccessItem, ShareAccessDto } from './users.dto.js';
 
-const STAFF_ROLES: readonly SchoolRoleKey[] = ['school_admin', 'accounts', 'teacher', 'non_teaching_staff'];
+const STAFF_ROLES: readonly SchoolRoleKey[] = ['principal', 'school_admin', 'accounts', 'teacher', 'non_teaching_staff'];
 /** The platform owner's hidden support login ("Open as admin") in every school. */
 export const SUPPORT_PREFIX = 'SUP-';
 const NOT_SUPPORT = { NOT: { loginId: { startsWith: SUPPORT_PREFIX } } } satisfies Prisma.UserWhereInput;
@@ -28,6 +31,7 @@ const USER_SELECT = {
   mustChangePassword: true,
   lastLoginAt: true,
   createdAt: true,
+  photoKey: true,
   userRoles: { select: { role: { select: { key: true, name: true } } } },
   employee: { select: { id: true, employeeNo: true, designation: true, status: true } },
   guardian: { select: { id: true, _count: { select: { children: true } } } },
@@ -191,8 +195,18 @@ export class UsersService {
         await this.assertAnotherAdmin(tx, id);
       }
       const rows = await tx.role.findMany({ where: { key: { in: roles }, isSystem: true }, select: { id: true } });
+      // Service record: a School Admin / Principal role taken away ends that period, a new one starts one.
+      for (const k of ['school_admin', 'principal'] as const) {
+        const had = user.userRoles.some((r) => r.role.key === k);
+        if (had && !roles.includes(k)) await closeTenure(tx, schoolId, id, { action: 'role_removed', role: k, endedByUserId: actorId });
+      }
       await tx.userRole.deleteMany({ where: { userId: id } });
       await tx.userRole.createMany({ data: rows.map((r) => ({ userId: id, roleId: r.id, schoolId })) });
+      for (const k of ['school_admin', 'principal'] as const) {
+        if (!roles.includes(k)) continue;
+        if (!user.userRoles.some((r) => r.role.key === k)) await openTenure(tx, schoolId, id, k, new Date());
+        await ensureLeaderRecord(tx, schoolId, id, k);
+      }
     });
     return this.one(schoolId, id);
   }
@@ -229,10 +243,100 @@ export class UsersService {
         if (user.employee && !EMPLOYED.includes(user.employee.status)) throw new BadRequestException('This staff member has left the school');
         if (user.student && user.student.status !== 'active' && !user.employee && !user.guardian) throw new BadRequestException('This student is no longer active');
       }
+      if (status === 'disabled') await closeTenure(tx, schoolId, id, { action: 'suspended', reason: 'Login disabled in Users & Access', endedByUserId: actorId });
       await tx.user.update({ where: { id }, data: { status } });
+      if (status === 'active') for (const r of user.userRoles) if (r.role.key === 'school_admin' || r.role.key === 'principal') await openTenure(tx, schoolId, id, r.role.key, new Date());
     });
     if (status === 'disabled') await this.auth.endSessions(schoolId, id);
     return this.one(schoolId, id);
+  }
+
+  // --- Shared admin access ("Admin 2", "Admin 3"…) ----------------------------------------
+
+  /** Everyone the admins shared access with, with what they may use. */
+  async listShared(schoolId: string) {
+    const roles = await this.prisma.forSchool(schoolId).role.findMany({
+      where: { key: { startsWith: DELEGATE_PREFIX }, isSystem: false },
+      orderBy: { level: 'asc' },
+      select: {
+        id: true,
+        key: true,
+        name: true,
+        description: true,
+        createdAt: true,
+        rolePermissions: { select: { permission: { select: { module: true, action: true } } } },
+        userRoles: { select: { user: { select: { id: true, firstName: true, lastName: true, email: true, loginId: true, status: true, lastLoginAt: true } } } },
+      },
+    });
+    return roles
+      .map((r) => ({
+        roleId: r.id,
+        label: r.name,
+        sharedBy: r.description,
+        createdAt: r.createdAt,
+        access: r.rolePermissions.map((p) => ({ module: p.permission.module, level: p.permission.action })),
+        user: r.userRoles[0]?.user ?? null,
+      }))
+      .sort((a, b) => Number(a.label.replace(/\D/g, '')) - Number(b.label.replace(/\D/g, '')));
+  }
+
+  /**
+   * Shares part of the admin's work with someone by email: a login with an ADM User ID and its own
+   * "Admin N" role holding only the chosen areas. Everything they do is logged under "Admin N".
+   */
+  async share(schoolId: string, actorId: string, dto: ShareAccessDto) {
+    const verified = dto.verification ? await this.redeem(schoolId, actorId, dto.verification, dto.email) : null;
+    const login = await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+      const actor = await tx.user.findUnique({ where: { id: actorId }, select: { firstName: true, lastName: true } });
+      const used = await tx.role.findMany({ where: { key: { startsWith: DELEGATE_PREFIX } }, select: { key: true } });
+      const n = Math.max(1, ...used.map((r) => Number(r.key.slice(DELEGATE_PREFIX.length)) || 1)) + 1;
+      const role = await tx.role.create({
+        data: { schoolId, key: `${DELEGATE_PREFIX}${n}`, name: `Admin ${n}`, level: 2, description: actor ? `${actor.firstName} ${actor.lastName}` : null, isSystem: false },
+        select: { id: true },
+      });
+      await this.grantShared(tx, schoolId, role.id, dto.access);
+      return this.accounts.createLogin(tx, schoolId, { firstName: dto.firstName, lastName: dto.lastName, email: verified ?? dto.email, emailVerified: !!verified }, [], { customRoleIds: [role.id] });
+    });
+    await this.accounts.announce(schoolId, [login]);
+    return { user: await this.one(schoolId, login.userId), temporaryPassword: login.password, credentials: handover(login) };
+  }
+
+  /** Changes what a shared admin may use; takes effect at their next request. */
+  async updateShared(schoolId: string, roleId: string, access: SharedAccessItem[]) {
+    await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+      const role = await tx.role.findFirst({ where: { id: roleId, key: { startsWith: DELEGATE_PREFIX }, isSystem: false }, select: { id: true } });
+      if (!role) throw new NotFoundException('Shared access not found');
+      await tx.rolePermission.deleteMany({ where: { roleId } });
+      await this.grantShared(tx, schoolId, roleId, access);
+    });
+    return this.listShared(schoolId);
+  }
+
+  /** Takes shared access away: the login is disabled and signed out; its past activity stays in the logs. */
+  async revokeShared(schoolId: string, roleId: string) {
+    const userIds = await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
+      const role = await tx.role.findFirst({ where: { id: roleId, key: { startsWith: DELEGATE_PREFIX }, isSystem: false }, select: { userRoles: { select: { userId: true } } } });
+      if (!role) throw new NotFoundException('Shared access not found');
+      const ids = role.userRoles.map((u) => u.userId);
+      await tx.user.updateMany({ where: { id: { in: ids } }, data: { status: 'disabled' } });
+      await tx.rolePermission.deleteMany({ where: { roleId } });
+      return ids;
+    });
+    for (const id of userIds) await this.auth.endSessions(schoolId, id);
+    return this.listShared(schoolId);
+  }
+
+  private async grantShared(tx: TenantTx, schoolId: string, roleId: string, access: SharedAccessItem[]) {
+    const keys = new Set<string>();
+    for (const a of access) {
+      const levels = SHAREABLE_ACCESS[a.module as Module];
+      if (!levels?.includes(a.level as AccessLevel)) throw new BadRequestException(`${a.module} cannot be shared at "${a.level}"`);
+      keys.add(permissionKey(a.module as Module, a.level as AccessLevel));
+    }
+    const perms = await tx.permission.findMany({ select: { id: true, module: true, action: true } });
+    const ids = perms.filter((p) => keys.has(`${p.module}:${p.action}`)).map((p) => p.id);
+    if (ids.length !== keys.size) throw new BadRequestException('Some of the chosen access does not exist');
+    await tx.rolePermission.createMany({ data: ids.map((permissionId) => ({ roleId, permissionId, schoolId })) });
   }
 
   private async one(schoolId: string, id: string) {
