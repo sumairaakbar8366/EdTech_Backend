@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { answerOf } from '../admissions/admission-form.js';
 import { AccountsService, handover, type GeneratedLogin } from '../accounts/accounts.service.js';
 import { toDateOnly } from '../common/date-only.js';
 import type { Prisma } from '../generated/prisma/client.js';
@@ -119,11 +120,13 @@ export class StudentsService {
           include: { academicYear: { select: { id: true, name: true, isCurrent: true } }, section: { select: SECTION_SELECT } },
         },
         user: { select: { id: true, email: true, status: true, lastLoginAt: true } },
-        admissionApplication: { select: { id: true, applicationNo: true } },
+        admissionApplication: { select: { id: true, applicationNo: true, source: true, createdAt: true, answers: { orderBy: { position: 'asc' } } } },
       },
     });
     if (!student) throw new NotFoundException('Student not found');
-    return student;
+    const { admissionApplication: app, ...rest } = student;
+    // What was asked on the school's admission form stays with the student.
+    return { ...rest, admissionApplication: app && { id: app.id, applicationNo: app.applicationNo, source: app.source, createdAt: app.createdAt, formAnswers: app.answers.map(answerOf) } };
   }
 
   /** The signed-in student's own record. */

@@ -247,6 +247,7 @@ model School {
   documents                Document[]
 
   admissionApplications  AdmissionApplication[]
+  admissionAnswers       AdmissionAnswer[]
   admissionInterviews    AdmissionInterview[]
   admissionStatusHistory AdmissionStatusHistory[]
 
@@ -1397,6 +1398,7 @@ model AdmissionApplication {
   student       Student?                 @relation(fields: [studentId, schoolId], references: [id, schoolId], onDelete: Restrict)
   assessments   AdmissionInterview[]
   statusHistory AdmissionStatusHistory[]
+  answers       AdmissionAnswer[]
 
   @@unique([schoolId, applicationNo])
   @@unique([studentId, schoolId])
@@ -1404,6 +1406,39 @@ model AdmissionApplication {
   @@index([schoolId, status])
   @@index([academicYearId, classId])
   @@map("admission_applications")
+}
+
+/// One answer to a school's own admission form field (admissions/admission-form.ts). The label, type
+/// and target are copied, so later changes to the form never change what the applicant answered.
+/// Each kind of value has its own typed column.
+model AdmissionAnswer {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  schoolId      String    @map("school_id") @db.Uuid
+  applicationId String    @map("application_id") @db.Uuid
+  fieldId       String    @map("field_id")
+  position      Int
+  label         String
+  /// text | textarea | number | email | phone | date | select | multiselect | checkbox | file
+  type          String
+  /// student | guardian | additional | documents
+  section       String
+  /// Student-record column enrollment copies the answer to (e.g. "student.nationalId"), if any.
+  saveTo        String?   @map("save_to")
+  valueText     String?   @map("value_text")
+  valueNumber   Float?    @map("value_number")
+  valueDate     DateTime? @map("value_date") @db.Date
+  valueBool     Boolean?  @map("value_bool")
+  valueList     String[]  @default([]) @map("value_list")
+  /// The uploaded document (file answers); it moves to the student's documents on enrollment.
+  documentId    String?   @map("document_id") @db.Uuid
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school      School               @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  application AdmissionApplication @relation(fields: [applicationId, schoolId], references: [id, schoolId], onDelete: Cascade)
+
+  @@unique([applicationId, fieldId])
+  @@index([schoolId])
+  @@map("admission_answers")
 }
 
 /// Interview or entrance test for an application.
@@ -2906,6 +2941,12 @@ model SchoolWebsite {
   admissionsOpen   Boolean  @default(true) @map("admissions_open")
   careersOpen      Boolean  @default(true) @map("careers_open")
   heroMediaId      String?  @map("hero_media_id") @db.Uuid
+  /// The school's online admission form (fields, required flags, class filters); null = the default form.
+  admissionForm    Json?    @map("admission_form")
+  /// Show the class fee structures (Finance) on the website and the admission form.
+  feesPublic       Boolean  @default(false) @map("fees_public")
+  /// Shown with the fees, e.g. sibling discounts or payment terms.
+  feeNote          String?  @map("fee_note")
   updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)

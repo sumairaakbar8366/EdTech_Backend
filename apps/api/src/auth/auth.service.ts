@@ -179,7 +179,7 @@ export class AuthService {
   /** One match: a one-time link into it. Several: the list to choose from. */
   private async signInOutcome(candidates: SignInCandidate[], purpose: 'login' | 'google', remember = false): Promise<SignInOutcome> {
     if (candidates.length > 1) {
-      return { choose: candidates.map((c) => (c.kind === 'platform' ? { school: 'console', name: 'Owner console (SchoolERP)' } : { school: c.school.slug, name: c.school.name })) };
+      return { choose: candidates.map((c) => (c.kind === 'platform' ? { school: 'console', name: 'Owner console (Skool EdTech)' } : { school: c.school.slug, name: c.school.name })) };
     }
     const c = candidates[0]!;
     if (c.kind === 'platform') {

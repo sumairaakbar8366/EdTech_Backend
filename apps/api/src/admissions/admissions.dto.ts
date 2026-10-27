@@ -4,6 +4,8 @@ import { IsDateOnly } from '../common/date-only.js';
 import { GENDERS, LoginPasswordDto, RELATIONS, StudentLoginDto, type Relation } from '../students/students.dto.js';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
+/** Names and phone numbers are stored without doubled or stray spaces. */
+const tidy = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') : value);
 const trimOrNull = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() || null : value);
 
 export const ADMISSION_STATUSES = [
@@ -36,15 +38,15 @@ export class ApplicationDto {
   @IsOptional() @IsUUID() academicYearId?: string;
   @IsUUID() classId: string;
   @IsUUID() campusId: string;
-  @Transform(trim) @IsString() @IsNotEmpty() @MaxLength(100) firstName: string;
-  @Transform(trim) @IsString() @IsNotEmpty() @MaxLength(100) lastName: string;
+  @Transform(tidy) @IsString() @IsNotEmpty() @MaxLength(100) firstName: string;
+  @Transform(tidy) @IsString() @IsNotEmpty() @MaxLength(100) lastName: string;
   @IsOptional() @IsIn(GENDERS) gender?: (typeof GENDERS)[number] | null;
   @IsDateOnly() dateOfBirth: string;
-  @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(150) previousSchool?: string | null;
-  @Transform(trim) @IsString() @IsNotEmpty() @MaxLength(100) guardianFirstName: string;
-  @Transform(trim) @IsString() @IsNotEmpty() @MaxLength(100) guardianLastName: string;
+  @IsOptional() @Transform(({ value }) => (typeof value === 'string' ? value.trim().replace(/\s+/g, ' ') || null : value)) @IsString() @MaxLength(150) previousSchool?: string | null;
+  @Transform(tidy) @IsString() @IsNotEmpty() @MaxLength(100) guardianFirstName: string;
+  @Transform(tidy) @IsString() @IsNotEmpty() @MaxLength(100) guardianLastName: string;
   @IsIn(RELATIONS) guardianRelation: Relation;
-  @Transform(trim) @IsString() @IsNotEmpty() @MaxLength(32) guardianPhone: string;
+  @Transform(tidy) @IsString() @IsNotEmpty() @MaxLength(32) guardianPhone: string;
   @IsOptional() @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() || null : value)) @IsEmail() @MaxLength(254) guardianEmail?: string | null;
   @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(500) address?: string | null;
   @IsOptional() @Transform(trimOrNull) @IsString() @MaxLength(3000) notes?: string | null;

@@ -109,7 +109,7 @@ export class SettingsService {
     const hostname = raw.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
     if (!/^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)) throw new BadRequestException('Enter a domain such as portal.yourschool.edu');
     if (hostname === this.baseDomain || hostname.endsWith(`.${this.baseDomain}`) || hostname === this.platformHost) {
-      throw new BadRequestException('That address is part of SchoolERP; add your school’s own domain instead');
+      throw new BadRequestException('That address is part of Skool EdTech; add your school’s own domain instead');
     }
     if (await this.prisma.domain.findUnique({ where: { hostname } })) throw new ConflictException('This domain is already registered');
     const count = await this.prisma.domain.count({ where: { schoolId } });

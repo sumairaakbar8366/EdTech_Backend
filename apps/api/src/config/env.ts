@@ -179,7 +179,7 @@ export class Env {
 
   /** Sender shown on every email, e.g. "SchoolERP <no-reply@schoolerp.pk>". */
   @IsString()
-  MAIL_FROM = 'SchoolERP <no-reply@schoolerp.local>';
+  MAIL_FROM = 'Skool EdTech <no-reply@schoolerp.local>';
 }
 
 export function validateEnv(config: Record<string, unknown>): Env {
