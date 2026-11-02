@@ -9,9 +9,10 @@ import { SubscriptionStateService, type SubscriptionState } from './subscription
 const DAY = 86_400_000;
 const SCHOOL = '0192f0a0-0000-7000-8000-00000000000a';
 
-function serviceWith(sub: Record<string, unknown> | null, domainUntil: Date | null = null) {
+function serviceWith(sub: Record<string, unknown> | null, domainUntil: Date | null = null, alerts: Record<string, unknown>[] = []) {
   const prisma = {
     subscription: { findFirst: async () => sub },
+    schoolUsageAlert: { findMany: async () => alerts },
     forSchool: () => ({ schoolSettings: { findUnique: async () => ({ customDomainUntil: domainUntil }) } }),
   } as unknown as PrismaService;
   return new SubscriptionStateService(prisma);
@@ -61,6 +62,16 @@ describe('SubscriptionStateService', () => {
     expect((await serviceWith(paid('starter', 20), new Date(Date.now() - DAY)).get(SCHOOL)).features).not.toContain('custom_domain');
   });
 
+  it('over the plan: warns during the grace period, pauses after it', async () => {
+    const alert = (graceEndsInDays: number) => [{ metric: 'students', level: 'over', used: 300, limit: 250, graceEndsAt: new Date(Date.now() + graceEndsInDays * DAY) }];
+    const during = await serviceWith(paid('starter', 20), null, alert(5)).get(SCHOOL);
+    expect(during.locked).toBe(false);
+    expect(during.usage).toHaveLength(1);
+    const after = await serviceWith(paid('starter', 20), null, alert(-1)).get(SCHOOL);
+    expect(after.locked).toBe(true);
+    expect(after.usagePaused).toBe(true);
+  });
+
   it('no subscription at all: locked', async () => {
     const s = await serviceWith(null).get(SCHOOL);
     expect(s.locked).toBe(true);
@@ -68,7 +79,7 @@ describe('SubscriptionStateService', () => {
 });
 
 function guardFor(state: Partial<SubscriptionState>) {
-  const full: SubscriptionState = { phase: 'active', locked: false, tier: null, status: 'active', billingCycle: 'monthly', endsAt: null, graceEndsAt: null, daysLeft: 10, features: ['core', 'website'], ...state };
+  const full: SubscriptionState = { phase: 'active', locked: false, tier: null, status: 'active', billingCycle: 'monthly', endsAt: null, graceEndsAt: null, daysLeft: 10, features: ['core', 'website'], usage: [], usagePaused: false, ...state };
   return new EntitlementGuard({ get: async () => full } as unknown as SubscriptionStateService);
 }
 function ctx(method: string, url: string, body: unknown = {}) {

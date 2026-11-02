@@ -28,27 +28,31 @@ function items(labels: string[]): NavItem[] {
 }
 
 export const ROLE_NAVIGATION: Record<SchoolRoleKey, readonly NavItem[]> = {
+  principal: items([
+    'Dashboard', 'Activity', 'Live Classes', 'Students', 'Staff', 'Admissions', 'Attendance', 'Timetable', 'Exams & Results',
+    'Finance', 'Payroll', 'Communication', 'Complaints', 'Events', 'Forms', 'Scholarship Candidates', 'Reports', 'Documents',
+  ]),
   school_admin: items([
-    'Dashboard', 'Students', 'Staff', 'Admissions', 'Academics', 'Attendance', 'Timetable',
-    'Finance', 'Payroll', 'LMS', 'Exams & Results', 'Communication', 'Reports', 'Documents', 'Website', 'Users & Access', 'Plans & Billing', 'Settings',
+    'Dashboard', 'Students', 'Staff', 'Admissions', 'Academics', 'Attendance', 'Timetable', 'Live Classes',
+    'Finance', 'Payroll', 'LMS', 'Exams & Results', 'Communication', 'Complaints', 'Events', 'Forms', 'Scholarship Candidates', 'Reports', 'Documents', 'Website', 'Users & Access', 'Activity', 'Plans & Billing', 'Settings',
   ]),
   accounts: items([
     'Dashboard', 'Fee Structures', 'Student Invoices', 'Payments', 'Pending Fees', 'Overdue Fees',
-    'Discounts', 'Scholarships', 'Staff Payroll', 'Salary Processing', 'Payslips', 'Financial Reports',
+    'Discounts', 'Scholarships', 'Staff Payroll', 'Salary Processing', 'Payslips', 'Financial Reports', 'Complaints',
   ]),
   teacher: items([
     'Dashboard', 'My Timetable', "Today's Classes", 'Start Class', 'Class Attendance', 'My Students',
     'Assignments', 'Learning Material', 'Exams / Marks', 'Student Performance', 'My Attendance',
-    'Leave', 'Salary / Payslips', 'Profile',
+    'Leave', 'Salary / Payslips', 'Complaints', 'Profile',
   ]),
-  non_teaching_staff: items(['Dashboard', 'My Attendance', 'Leave', 'Assigned Tasks', 'Payslips']),
+  non_teaching_staff: items(['Dashboard', 'My Attendance', 'Leave', 'Assigned Tasks', 'Payslips', 'Complaints']),
   student: items([
     'Dashboard', 'My Profile', 'My Classes', 'Timetable', 'Attendance', 'Learning Material',
-    'Assignments', 'Exams', 'Results', 'Fees', 'Documents', 'Document Requests', 'Notifications',
+    'Assignments', 'Exams', 'Results', 'Fees', 'Documents', 'Document Requests', 'Notifications', 'Complaints',
   ]),
   parent: items([
     'Dashboard', 'My Children', 'Attendance', 'Timetable', 'Homework', 'Results', 'Fees',
-    'Receipts', 'Notifications', 'Teacher Communication', 'Documents', 'Document Requests',
+    'Receipts', 'Notifications', 'Teacher Communication', 'Complaints', 'Documents', 'Document Requests',
   ]),
 };
 

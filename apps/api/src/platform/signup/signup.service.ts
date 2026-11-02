@@ -1,19 +1,17 @@
-import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomInt } from 'node:crypto';
 import { isValidSchoolSlug } from '@schoolerp/shared';
 import type { Env } from '../../config/env.js';
 import { SocialIdentityService } from '../../auth/social-identity.service.js';
 import { LoginTicketService } from '../../auth/login-ticket.service.js';
-import { VerificationCodesService } from '../../auth/verification-codes.service.js';
 import { DeliveryService } from '../../delivery/delivery.service.js';
 import { OwnerAlertsService } from '../../delivery/owner-alerts.service.js';
 import { WebUrls } from '../../delivery/web-urls.service.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { SchoolProvisioningService } from '../schools/school-provisioning.service.js';
-import type { QuickSignupDto, SignupDto } from './signup.dto.js';
 
-/** Plan a self-service school is attached to during its trial (the trial itself has every feature). */
+/** Plan a new school is attached to during its trial (the trial itself has every feature). */
 const TRIAL_TIER_ORDER = ['growth', 'starter'];
 
 /** "Greenfield High School, Lahore" → "greenfield-high-school-lahore" (same rule as the web form). */
@@ -32,198 +30,112 @@ function generatePassword(): string {
   return chars.join('');
 }
 
-/** Everything needed to create a self-service school and its first admin. */
-interface NewSchool {
+/** Everything needed to create a verified school and its first admin. */
+export interface NewSchool {
   schoolName: string;
-  slug: string;
-  city: string | null;
+  city: string;
   firstName: string;
   lastName: string;
   designation: string;
   email: string;
-  phone: string | null;
-  password: string;
-  /** Sent in the welcome email when the password was generated for them. */
-  emailPassword: boolean;
-  method: 'form' | 'email' | 'google';
+  phone: string;
+  trialDays: number;
+  /** How the owner's mailbox was proven. */
+  method: 'google' | 'email';
+  /** One line for the owner's alert about who registered and how big the school is. */
+  summary: string;
 }
 
 /**
- * Self-service sign-up (like any SaaS): the person proves their email with a code, the school is
- * provisioned at once on a free trial, and they continue to their school's site already signed in
- * (one-time ticket). The platform owner sees it under Applications (source "self_signup") and gets an email.
+ * Creates a school once the registration checks have passed (see RegistrationService): the school,
+ * its first admin (password emailed, never shown), a trial sized to the school, the owner's record
+ * under Applications, and the owner's alert. Nothing else creates schools by itself.
  */
 @Injectable()
 export class SignupService {
-  private readonly log = new Logger(SignupService.name);
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly provisioning: SchoolProvisioningService,
-    private readonly codes: VerificationCodesService,
     private readonly tickets: LoginTicketService,
     private readonly delivery: DeliveryService,
     private readonly urls: WebUrls,
     private readonly social: SocialIdentityService,
     private readonly alerts: OwnerAlertsService,
-    config: ConfigService<Env, true>,
-  ) {
-    this.verificationOff = config.get('EMAIL_VERIFICATION', { infer: true }) === 'off';
-  }
+    private readonly config: ConfigService<Env, true>,
+  ) {}
 
-  /** EMAIL_VERIFICATION=off (testing only): emails are accepted without a code. */
-  private readonly verificationOff: boolean;
-
-  /** What the sign-up and sign-in screens may offer (public, no secrets). */
-  config() {
-    return { googleClientId: this.social.clientIds.google, emailVerification: this.verificationOff ? ('off' as const) : ('required' as const) };
-  }
-
-  /** Whether a web address can be taken, with a free alternative when it cannot. */
-  async checkSlug(raw: string) {
-    const slug = raw.trim().toLowerCase();
-    if (!isValidSchoolSlug(slug)) return { slug, available: false, reason: 'Use 3–63 lowercase letters, digits or hyphens (not a reserved word).', suggestion: null };
-    if (!(await this.taken(slug))) return { slug, available: true, reason: null, suggestion: null };
-    for (let n = 2; n < 50; n++) {
-      const s = `${slug.slice(0, 60)}-${n}`;
-      if (!(await this.taken(s))) return { slug, available: false, reason: 'This address is taken.', suggestion: s };
-    }
-    return { slug, available: false, reason: 'This address is taken.', suggestion: null };
-  }
-
-  sendCode(email: string) {
-    // Testing mode: nothing is sent and no code is asked for.
-    if (this.verificationOff) return Promise.resolve({ verificationId: null, email, expiresInSeconds: 0, resendInSeconds: 0, skipped: true as const });
-    return this.codes.send({ owner: `signup:${email}`, email, purpose: 'signup' });
-  }
-
-  async signup(dto: SignupDto) {
-    if (!isValidSchoolSlug(dto.slug)) throw new BadRequestException('This web address is reserved. Choose another.');
-    if (await this.taken(dto.slug)) throw new ConflictException('This web address is taken. Choose another.');
-    const email = this.verificationOff ? dto.email : await this.codes.verify(dto.verificationId, `signup:${dto.email}`, dto.code);
-    return this.create({ schoolName: dto.schoolName, slug: dto.slug, city: dto.city ?? null, firstName: dto.firstName, lastName: dto.lastName, designation: dto.designation, email, phone: dto.phone, password: dto.password, emailPassword: false, method: 'form' });
-  }
-
-  /** The "Start free trial" sign-up: a school name plus Google, or an email and name. */
-  async quickSignup(dto: QuickSignupDto) {
-    let who: { email: string; firstName: string; lastName: string };
-    let method: NewSchool['method'];
-    if (dto.credential) {
-      if (!dto.provider || !dto.nonce) throw new BadRequestException('Continue with Google again.');
-      who = await this.social.verify(dto.provider, dto.credential, dto.nonce);
-      // Google proves the account is real; the emailed code proves this person can read its inbox.
-      if (!this.verificationOff) {
-        if (!(dto.verificationId && dto.code)) throw new BadRequestException('Enter the 6-digit code we emailed you.');
-        await this.codes.verify(dto.verificationId, `signup:${who.email}`, dto.code);
-      }
-      method = dto.provider;
-    } else {
-      if (!dto.email) throw new BadRequestException('Enter your email, or continue with Google.');
-      if (!this.verificationOff && !(dto.verificationId && dto.code)) throw new BadRequestException('Enter the 6-digit code we emailed you.');
-      const email = this.verificationOff ? dto.email : await this.codes.verify(dto.verificationId!, `signup:${dto.email}`, dto.code!);
-      const [first, ...rest] = (dto.name ?? '').split(/\s+/).filter(Boolean);
-      who = { email, firstName: (first ?? email.split('@')[0] ?? 'School').slice(0, 100), lastName: (rest.join(' ') || 'Admin').slice(0, 100) };
-      method = 'email';
-    }
-    const slug = await this.freeSlug(dto.schoolName);
-    return this.create({ schoolName: dto.schoolName, slug, city: null, firstName: who.firstName, lastName: who.lastName, designation: 'Administrator', email: who.email, phone: null, password: generatePassword(), emailPassword: true, method });
+  /** What the registration and sign-in screens may offer (public, no secrets). */
+  publicConfig() {
+    return { googleClientId: this.social.clientIds.google };
   }
 
   /** A free web address from the school's name: the name itself, else the first numbered variant. */
-  private async freeSlug(schoolName: string): Promise<string> {
+  async freeSlug(schoolName: string): Promise<string> {
     const base = slugify(schoolName).replace(/^(.{0,2})$/, '$1-school');
-    const check = await this.checkSlug(base);
-    if (check.available) return base;
-    if (check.suggestion) return check.suggestion;
+    for (let n = 1; n < 100; n++) {
+      const s = n === 1 ? base : `${base.slice(0, 60)}-${n}`;
+      if (isValidSchoolSlug(s) && !(await this.prisma.school.findUnique({ where: { slug: s }, select: { id: true } }))) return s;
+    }
     throw new ConflictException('Choose a different school name: no free web address could be made from it.');
   }
 
-  private async create(dto: NewSchool) {
-    const email = dto.email;
+  async createSchool(dto: NewSchool) {
+    const slug = await this.freeSlug(dto.schoolName);
     const tier = await this.trialTier();
+    const password = generatePassword();
     const now = new Date();
     const result = await this.provisioning.provision(
-      {
-        name: dto.schoolName,
-        slug: dto.slug,
-        tierCode: tier,
-        timezone: 'Asia/Karachi',
-        currency: 'PKR',
-        campus: { name: 'Main Campus', code: 'MAIN' },
-        admin: { firstName: dto.firstName, lastName: dto.lastName, email, password: dto.password },
-      },
+      { name: dto.schoolName, slug, tierCode: tier, timezone: 'Asia/Karachi', currency: 'PKR', campus: { name: 'Main Campus', code: 'MAIN' }, admin: { firstName: dto.firstName, lastName: dto.lastName, email: dto.email, password } },
       now,
-      false,
+      // The password travels by email, so it is temporary: the first sign-in must replace it.
       true,
+      true,
+      dto.trialDays,
     );
-    // The owner's record of who registered (shown under Applications as a self-service sign-up).
     await this.prisma.schoolApplication.create({
-      data: {
-        schoolName: dto.schoolName,
-        contactFirstName: dto.firstName,
-        contactLastName: dto.lastName,
-        designation: dto.designation,
-        contactEmail: email,
-        contactPhone: dto.phone,
-        schoolCity: dto.city,
-        requestedTierCode: tier,
-        source: 'self_signup',
-        status: 'onboarded',
-        reviewedAt: now,
-        schoolId: result.school.id,
-      },
+      data: { schoolName: dto.schoolName, contactFirstName: dto.firstName, contactLastName: dto.lastName, designation: dto.designation, contactEmail: dto.email, contactPhone: dto.phone, schoolCity: dto.city, requestedTierCode: tier, source: 'verified_registration', status: 'onboarded', reviewedAt: now, schoolId: result.school.id },
     });
-    if (dto.phone) await this.prisma.forSchool(result.school.id).user.update({ where: { id: result.admin.id }, data: { phone: dto.phone } });
+    await this.prisma.forSchool(result.school.id).user.update({ where: { id: result.admin.id }, data: { phone: dto.phone } });
 
-    const signInUrl = this.urls.school(dto.slug, '/login');
+    const signInUrl = this.urls.school(slug, '/login');
     const trialEndsAt = result.subscription.trialEndsAt;
     await this.delivery.trySend({
       channel: 'email',
-      to: email,
+      to: dto.email,
       template: 'school_signup_welcome',
       schoolId: result.school.id,
-      data: { name: dto.firstName, schoolName: dto.schoolName, loginId: result.admin.loginId, signInUrl, trialEndsAt: trialEndsAt.toISOString(), ...(dto.emailPassword && { password: dto.password }), provider: dto.method === 'google' ? 'Google' : undefined },
+      data: { name: dto.firstName, schoolName: dto.schoolName, loginId: result.admin.loginId, signInUrl, trialEndsAt: trialEndsAt.toISOString(), password, provider: dto.method === 'google' ? 'Google' : undefined },
     });
-    await this.notifyOwners(dto, result.school.id, trialEndsAt);
-
-    const ticket = await this.tickets.create({ schoolId: result.school.id, userId: result.admin.id, purpose: 'signup' });
-    return {
-      school: { id: result.school.id, name: dto.schoolName, slug: dto.slug },
-      loginId: result.admin.loginId,
-      trialEndsAt,
-      signInUrl,
-      /** Where the generated password went (quick sign-up); null when they chose their own. */
-      passwordSentTo: dto.emailPassword ? email : null,
-      /** Opens the school's site already signed in (valid 2 minutes, once). */
-      continueUrl: this.urls.school(dto.slug, `/welcome?ticket=${ticket}`),
-    };
-  }
-
-  private async notifyOwners(dto: NewSchool, schoolId: string, trialEndsAt: Date) {
-    const method = { form: 'full form', email: 'email', google: 'Google' }[dto.method];
     await this.alerts.raise({
       kind: 'school_signup',
-      title: `New sign-up: ${dto.schoolName}`,
-      body: `${dto.firstName} ${dto.lastName} (${dto.email}) started a free trial with ${method}.`,
-      link: `/schools/${schoolId}`,
-      schoolId,
+      title: `New verified school: ${dto.schoolName}`,
+      body: `${dto.firstName} ${dto.lastName} (${dto.email}) passed every check. ${dto.summary} Trial: ${dto.trialDays} days.`,
+      link: `/schools/${result.school.id}`,
+      schoolId: result.school.id,
       actor: dto.email,
       email: {
         template: 'owner_new_signup',
-        data: { schoolName: dto.schoolName, slug: dto.slug, contact: `${dto.firstName} ${dto.lastName} (${dto.designation})`, email: dto.email, phone: dto.phone, city: dto.city, trialEndsAt: trialEndsAt.toISOString(), consoleUrl: this.urls.platform(`/schools/${schoolId}`), method },
+        data: { schoolName: dto.schoolName, slug, contact: `${dto.firstName} ${dto.lastName} (${dto.designation})`, email: dto.email, phone: dto.phone, city: dto.city, trialEndsAt: trialEndsAt.toISOString(), consoleUrl: this.urls.platform(`/schools/${result.school.id}`), method: `verified registration (${dto.method === 'google' ? 'Google' : 'email code'})` },
       },
     });
+    const ticket = await this.tickets.create({ schoolId: result.school.id, userId: result.admin.id, purpose: 'signup' });
+    return {
+      school: { id: result.school.id, name: dto.schoolName, slug },
+      loginId: result.admin.loginId,
+      trialEndsAt,
+      trialDays: dto.trialDays,
+      signInUrl,
+      passwordSentTo: dto.email,
+      /** Opens the school's site already signed in (valid 2 minutes, once). */
+      continueUrl: this.urls.school(slug, `/welcome?ticket=${ticket}`),
+    };
   }
 
   private async trialTier(): Promise<string> {
     const tiers = await this.prisma.subscriptionTier.findMany({ where: { isActive: true }, select: { code: true }, orderBy: { sortOrder: 'asc' } });
     const codes = tiers.map((t) => t.code);
     const pick = TRIAL_TIER_ORDER.find((c) => codes.includes(c)) ?? codes[0];
-    if (!pick) throw new BadRequestException('Sign-up is not available right now. Please contact us.');
+    if (!pick) throw new ConflictException('Registration is not available right now. Please contact us.');
     return pick;
-  }
-
-  private async taken(slug: string) {
-    return !!(await this.prisma.school.findUnique({ where: { slug }, select: { id: true } }));
   }
 }

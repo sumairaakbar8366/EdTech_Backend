@@ -5,7 +5,7 @@ import { IsString, IsUrl, MaxLength, ValidateNested } from 'class-validator';
 import type { Env } from '../config/env.js';
 import { CurrentAuth, RequireAccess } from '../auth/decorators.js';
 import type { AuthContext } from '../common/request-context.js';
-import { AnnouncementDto, MessageDto, StartThreadDto } from './communication.dto.js';
+import { AnnouncementDto, MessageDto, PeopleSearchQuery, StartThreadDto } from './communication.dto.js';
 import { CommunicationService } from './communication.service.js';
 import { NotificationsService } from './notifications.service.js';
 
@@ -81,6 +81,11 @@ export class AnnouncementsController {
   @AnyRole() @Get()
   list(@CurrentAuth() a: SchoolAuth) {
     return this.communication.listAnnouncements(a);
+  }
+
+  @Manage() @Get('people')
+  people(@CurrentAuth() a: SchoolAuth, @Query() q: PeopleSearchQuery) {
+    return this.communication.searchPeople(a, q);
   }
 
   @Manage() @Post()

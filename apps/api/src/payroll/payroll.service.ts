@@ -6,12 +6,13 @@ import { schoolClock } from '../common/school-time.js';
 import { fromMinor, toMinor } from '../fees/money.js';
 import type { PayrollRunStatus } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
+import { approverIds } from '../rbac/approvers.js';
 import { NotificationsService } from '../communication/notifications.service.js';
 import { PermissionService } from '../rbac/permission.service.js';
 import { calculatePay, netPay } from './engine.js';
 import type { AdjustItemDto, CreateRunDto, PayRunDto, SalaryStructureDto } from './payroll.dto.js';
 
-const EMPLOYEE_REF = { select: { id: true, employeeNo: true, firstName: true, lastName: true, designation: true, staffType: true, userId: true } } as const;
+const EMPLOYEE_REF = { select: { id: true, employeeNo: true, firstName: true, lastName: true, designation: true, staffType: true, userId: true, photoKey: true } } as const;
 const PAYABLE_STATUSES = ['active', 'on_leave'] as const;
 
 /** Page 9: salary structures, payroll runs (draft → reviewed → approved → paid) and payslips. */
@@ -162,9 +163,11 @@ export class PayrollService {
     });
   }
 
-  /** draft → reviewed (Accounts Review). */
-  submit(schoolId: string, id: string, actorUserId: string) {
-    return this.transition(schoolId, id, ['draft'], { status: 'reviewed', reviewedBy: actorUserId, reviewedAt: new Date() });
+  /** draft → reviewed (Accounts Review); the principal and admins are asked to approve. */
+  async submit(schoolId: string, id: string, actorUserId: string) {
+    const run = await this.transition(schoolId, id, ['draft'], { status: 'reviewed', reviewedBy: actorUserId, reviewedAt: new Date() });
+    await this.notifications.notify(schoolId, await approverIds(this.prisma, schoolId), { eventType: 'payroll_approval', title: 'Payroll waiting for approval', body: 'Accounts sent a payroll run for approval.', link: `/payroll/runs/${id}` });
+    return run;
   }
 
   /** reviewed → approved (Admin Approval). */
@@ -235,7 +238,7 @@ export class PayrollService {
       take: 1000,
       select: {
         id: true, gross: true, totalDeductions: true, net: true,
-        employee: { select: { id: true, employeeNo: true, firstName: true, lastName: true, designation: true } },
+        employee: { select: { id: true, employeeNo: true, firstName: true, lastName: true, designation: true, photoKey: true } },
         payslip: { select: { payslipNo: true } },
         payment: { select: { method: true, reference: true, paidAt: true, payeeAccount: true } },
         run: { select: { id: true, period: { select: { name: true, startDate: true } } } },

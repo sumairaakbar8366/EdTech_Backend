@@ -14,6 +14,8 @@ import { LoginTicketService } from './login-ticket.service.js';
 import { PasswordResetService } from './password-reset.service.js';
 import { RefreshTokenService } from './refresh-token.service.js';
 import { VerificationCodesService } from './verification-codes.service.js';
+import { ProofsService } from './proofs.service.js';
+import { LoginLockService } from './login-lock.service.js';
 
 @Module({
   imports: [
@@ -38,6 +40,8 @@ import { VerificationCodesService } from './verification-codes.service.js';
     PasswordService,
     RefreshTokenService,
     VerificationCodesService,
+    ProofsService,
+    LoginLockService,
     PasswordResetService,
     LoginTicketService,
     LoginEventsService,
@@ -46,6 +50,6 @@ import { VerificationCodesService } from './verification-codes.service.js';
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: AccessGuard },
   ],
-  exports: [PasswordService, AuthService, VerificationCodesService, LoginTicketService, LoginEventsService, SocialIdentityService],
+  exports: [PasswordService, AuthService, VerificationCodesService, ProofsService, LoginTicketService, LoginEventsService, SocialIdentityService],
 })
 export class AuthModule {}

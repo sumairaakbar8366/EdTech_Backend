@@ -48,7 +48,7 @@ describe('permission matrix (page 15)', () => {
 
   it('gives non-teaching staff only their own records (approved 2026-10-01)', () => {
     expect(defaultPermissionsForRole('non_teaching_staff').sort()).toEqual(
-      ['attendance:own', 'communication:own', 'documents:own', 'leave:own', 'payroll:own', 'staff:own'].sort(),
+      ['attendance:own', 'communication:own', 'complaints:own', 'documents:own', 'leave:own', 'payroll:own', 'staff:own'].sort(),
     );
   });
 

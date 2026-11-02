@@ -14,14 +14,15 @@ export const PLAN_FEATURES_LIST = [
   'custom_domain',
   'theme',
   'multi_campus',
+  'leadership_roles',
 ] as const;
 export type PlanFeature = (typeof PLAN_FEATURES_LIST)[number];
 
 /** What each plan code includes. Unknown/custom plans get everything. */
 export const PLAN_FEATURES: Record<string, readonly PlanFeature[]> = {
   starter: ['core', 'website'],
-  growth: ['core', 'website', 'exams', 'lms', 'payroll', 'document_requests', 'import_export', 'gps_attendance'],
-  scale: ['core', 'website', 'exams', 'lms', 'payroll', 'document_requests', 'import_export', 'gps_attendance', 'custom_domain', 'theme', 'multi_campus'],
+  growth: ['core', 'website', 'exams', 'lms', 'payroll', 'document_requests', 'import_export', 'gps_attendance', 'leadership_roles'],
+  scale: ['core', 'website', 'exams', 'lms', 'payroll', 'document_requests', 'import_export', 'gps_attendance', 'custom_domain', 'theme', 'multi_campus', 'leadership_roles'],
   enterprise: [...PLAN_FEATURES_LIST],
 };
 
@@ -43,7 +44,16 @@ export const FEATURE_INFO: Record<PlanFeature, { label: string; description: str
   gps_attendance: { label: 'GPS staff attendance', description: 'Staff check in from campus with location; the office reviews flagged check-ins.', plan: 'growth' },
   custom_domain: { label: 'Your own domain', description: 'Run your website and portal on your school’s own domain name.', plan: 'scale' },
   theme: { label: 'Your theme colour', description: 'Brand the portal and website with your school’s own colour and logo.', plan: 'scale' },
+  leadership_roles: { label: 'Director, Vice Principal & more', description: 'Give directors, vice principals and other senior roles their own login and dashboard, shaped by you.', plan: 'growth' },
   multi_campus: { label: 'Multiple campuses', description: 'Run branches from one account, up to your plan’s campus limit.', plan: 'scale' },
 };
 
 export type SubscriptionPhase = 'trial' | 'active' | 'grace' | 'expired';
+
+// --- Plan size limits -------------------------------------------------------------------------
+/** Stored files (documents, photos) a plan includes, in MB. Plans not listed (custom, enterprise) are not limited. */
+export const STORAGE_MB_BY_PLAN: Record<string, number> = { starter: 1_000, growth: 10_000, scale: 50_000 };
+/** A school is warned from this share of a limit… */
+export const USAGE_WARN_RATIO = 0.8;
+/** …and has this many days after going over to change plan before its access is paused. */
+export const USAGE_GRACE_DAYS = 14;

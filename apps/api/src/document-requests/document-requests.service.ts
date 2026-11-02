@@ -3,6 +3,7 @@ import type { AuthContext } from '../common/request-context.js';
 import { NotificationsService } from '../communication/notifications.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
+import { approverIds } from '../rbac/approvers.js';
 import { ADMIN_TRANSITIONS, type CreateRequestDto, type ListRequestsQuery, type MoveRequestDto } from './document-requests.dto.js';
 
 type SchoolAuth = Extract<AuthContext, { scope: 'school' }>;
@@ -62,8 +63,7 @@ export class DocumentRequestsService {
         include: INCLUDE,
       });
     });
-    const admins = await this.prisma.forSchool(auth.schoolId).user.findMany({ where: { status: 'active', userRoles: { some: { role: { key: 'school_admin' } } } }, select: { id: true } });
-    await this.notifications.notify(auth.schoolId, admins.map((a) => a.id), {
+    await this.notifications.notify(auth.schoolId, await approverIds(this.prisma, auth.schoolId), {
       eventType: 'document_request',
       title: `New request: ${TYPE_LABEL[request.type]}`,
       body: `${request.requestNo} · ${request.student.firstName} ${request.student.lastName}`,

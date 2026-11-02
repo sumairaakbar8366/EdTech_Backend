@@ -38,7 +38,8 @@ async function bootstrap() {
   app.enableShutdownHooks();
 
   const port = config.get('PORT', { infer: true });
-  await app.listen(port);
-  Logger.log(`API listening on http://localhost:${port}/api`, 'Bootstrap');
+  const host = config.get('HOST', { infer: true });
+  await app.listen(port, host);
+  Logger.log(`API listening on http://${host}:${port}/api`, 'Bootstrap');
 }
 await bootstrap();

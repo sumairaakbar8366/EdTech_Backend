@@ -410,7 +410,7 @@ export class LmsService {
       db.studentGuardian.findMany({ where: { guardian: { userId: auth.userId } }, select: { studentId: true } }),
     ]);
     return {
-      isAdmin: access.roles.some((r) => r.key === 'school_admin'),
+      isAdmin: access.roles.some((r) => r.key === 'school_admin' || r.key === 'principal'),
       employeeId: employee?.id ?? null,
       selfStudentId: student?.id ?? null,
       childIds: links.map((l) => l.studentId),

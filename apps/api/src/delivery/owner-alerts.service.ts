@@ -3,7 +3,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { DeliveryService, type SendRequest } from './delivery.service.js';
 import type { TemplateName } from './templates/index.js';
 
-export type OwnerAlertKind = 'school_signup' | 'school_application' | 'payment_received' | 'password_reset_request' | 'user_id_request' | 'password_reset_done';
+export type OwnerAlertKind = 'school_signup' | 'school_usage' | 'school_application' | 'payment_received' | 'password_reset_request' | 'user_id_request' | 'password_reset_done' | 'sponsorship_opportunity' | 'scholarship_request';
 
 export interface OwnerAlert<N extends TemplateName = TemplateName> {
   kind: OwnerAlertKind;

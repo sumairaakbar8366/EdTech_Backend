@@ -1,5 +1,5 @@
 import { SCHOOL_ROLE_KEYS } from '@schoolerp/shared';
-import { ArrayUnique, IsArray, IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
+import { ArrayMaxSize, ArrayUnique, IsArray, IsIn, IsOptional, IsString, IsUUID, MaxLength, MinLength } from 'class-validator';
 
 export class AnnouncementDto {
   @IsString() @MinLength(2) @MaxLength(150)
@@ -9,8 +9,20 @@ export class AnnouncementDto {
   body!: string;
 
   /** Empty or missing means everyone in the school. */
-  @IsOptional() @IsArray() @ArrayUnique() @IsIn(SCHOOL_ROLE_KEYS.filter((r) => r !== 'school_admin'), { each: true, message: 'Announcements go to staff, students or parents (admins publish them)' })
+  @IsOptional() @IsArray() @ArrayUnique() @IsIn(SCHOOL_ROLE_KEYS.filter((r) => r !== 'school_admin' && r !== 'principal'), { each: true, message: 'Announcements go to staff, students or parents (admins publish them)' })
   targetRoles?: string[];
+
+  /** Individual people picked by name (user ids); added to the roles' recipients. */
+  @IsOptional() @IsArray() @ArrayUnique() @ArrayMaxSize(500) @IsUUID('all', { each: true })
+  targetUserIds?: string[];
+}
+
+export class PeopleSearchQuery {
+  @IsOptional() @IsString() @MaxLength(100)
+  q?: string;
+
+  @IsOptional() @IsIn(SCHOOL_ROLE_KEYS)
+  role?: string;
 }
 
 export class StartThreadDto {

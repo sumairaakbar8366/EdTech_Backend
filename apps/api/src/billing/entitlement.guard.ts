@@ -45,6 +45,7 @@ export class EntitlementGuard implements CanActivate {
     if (ALLOWED_WHEN_LOCKED.some((r) => r.test(path))) return true;
     const s = await this.state.get(req.auth.schoolId);
     if (s.locked) {
+      if (s.usagePaused && s.phase !== 'expired') throw new PaymentRequired('USAGE_OVER_PLAN', 'Your school has grown past its plan and the grace period is over. Your data is safe; the school admin can choose a bigger plan under Plans & billing to unlock it.');
       throw new PaymentRequired('SUBSCRIPTION_EXPIRED', 'Your school’s subscription has ended. Your data is safe; the school admin can choose a plan under Plans & billing to unlock it.');
     }
     const write = !READS.has(req.method);

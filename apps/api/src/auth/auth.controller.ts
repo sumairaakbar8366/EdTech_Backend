@@ -18,7 +18,7 @@ import type { Env } from '../config/env.js';
 import type { AppRequest, AuthContext } from '../common/request-context.js';
 import { AuthService, type IssuedTokens } from './auth.service.js';
 import { AllowPendingPassword, CurrentAuth, Public } from './decorators.js';
-import { ChangePasswordDto, ForgotPasswordDto, ForgotUserIdDto, LoginDto, ResetPasswordDto, ResetTokenDto, SendEmailCodeDto, SocialTicketDto, TicketDto, UniversalLoginDto, VerifyEmailCodeDto } from './login.dto.js';
+import { OwnerCodeDto, ChangePasswordDto, ForgotPasswordDto, ForgotUserIdDto, LoginDto, ResetPasswordDto, ResetTokenDto, SendEmailCodeDto, SocialTicketDto, TicketDto, UniversalLoginDto, VerifyEmailCodeDto } from './login.dto.js';
 
 const REFRESH_COOKIE = 'schoolerp_rt';
 /** The session cookie lives under this tenant's API ("/api/s/demo/auth", "/api/console/auth" or
@@ -247,5 +247,13 @@ export class UniversalLoginController {
   @HttpCode(HttpStatus.OK)
   login(@Req() req: AppRequest, @Body() dto: UniversalLoginDto) {
     return this.auth.universalLogin(dto.identifier, dto.password, dto.school, loginContext(req), dto.remember === true);
+  }
+
+  /** Second step for the owner console: the code emailed after the password. */
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @Post('verify')
+  @HttpCode(HttpStatus.OK)
+  verify(@Req() req: AppRequest, @Body() dto: OwnerCodeDto) {
+    return this.auth.completeOwnerLogin(dto.verificationId, dto.code, loginContext(req));
   }
 }

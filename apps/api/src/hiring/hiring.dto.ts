@@ -44,6 +44,8 @@ export class UpdateJobPostDto {
 }
 
 export class ApplicationDetailsDto {
+  /** The applicant's picture, uploaded first (POST /photos/upload or /public/photos). Required on the website form. */
+  @IsOptional() @IsUUID() photoId?: string;
   @Transform(trim) @IsString() @IsNotEmpty() @MaxLength(100) firstName: string;
   @Transform(trim) @IsString() @IsNotEmpty() @MaxLength(100) lastName: string;
   @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value)) @IsEmail() @MaxLength(254) email: string;

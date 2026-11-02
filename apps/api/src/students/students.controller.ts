@@ -59,6 +59,12 @@ export class StudentsController {
     return this.students.myChildren(a.schoolId, a.userId);
   }
 
+  /** Per child: attendance %, fees due and the latest published result, for the parent dashboard. */
+  @RequireAccess('students', ['children']) @Get('my-children/overview')
+  childrenOverview(@CurrentAuth() a: SchoolAuth) {
+    return this.students.childrenOverview(a.schoolId, a.userId);
+  }
+
   @RequireAccess('students', ['children']) @Get('my-children/:id')
   child(@CurrentAuth() a: SchoolAuth, @Param('id', Id()) id: string) {
     return this.students.getChild(a.schoolId, a.userId, id);

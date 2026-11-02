@@ -22,6 +22,7 @@
     "db:status": "prisma migrate status",
     "db:seed": "nest build && node dist/cli/seed.js",
     "db:seed:demo-attendance": "nest build && node dist/cli/demo-attendance.js",
+    "delete-schools": "nest build && node dist/cli/delete-schools.js",
     "reset-platform-password": "nest build && node dist/cli/reset-platform-password.js",
     "notify-login-id-renames": "nest build && node dist/cli/notify-login-id-renames.js",
     "postinstall": "prisma generate"
@@ -68,6 +69,7 @@
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
+    "sharp": "^0.35.5",
     "web-push": "^3.6.7"
   }
 }

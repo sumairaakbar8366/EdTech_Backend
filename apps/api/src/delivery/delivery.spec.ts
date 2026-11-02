@@ -56,7 +56,7 @@ describe('templates', () => {
 
   it('renders the test template on every channel', () => {
     const m = TEMPLATES.test.render({ sentBy: 'owner@schoolerp.local' });
-    expect(m.subject).toBe('SchoolERP test message');
+    expect(m.subject).toBe('Skool EdTech test message');
     expect(m.text).toContain('owner@schoolerp.local');
     expect(TEMPLATES.test.channels).toEqual(['email', 'sms', 'whatsapp', 'push']);
   });

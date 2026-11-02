@@ -4,9 +4,12 @@ import { isoWeekday, schoolClock, toHHMM, toMinutes } from '../common/school-tim
 import { PrismaService, type TenantTx } from '../prisma/prisma.service.js';
 import type { SlotDto, TeacherOptionsQuery } from './timetable.dto.js';
 
+/** Minutes after the start before a period that has not been started counts as late. */
+export const LATE_START_GRACE_MINUTES = 5;
+
 const SLOT_INCLUDE = {
   subject: { select: { id: true, name: true, code: true } },
-  employee: { select: { id: true, firstName: true, lastName: true, employeeNo: true } },
+  employee: { select: { id: true, firstName: true, lastName: true, employeeNo: true, photoKey: true } },
   room: { select: { id: true, name: true } },
   section: { select: { id: true, name: true, schoolClass: { select: { id: true, name: true, level: true } }, campus: { select: { id: true, code: true } } } },
 } as const;
@@ -282,11 +285,14 @@ export class TimetableService {
     const isPast = day < clock.date;
     const rows = slots.map((s) => {
       const session = s.sessions[0] ?? null;
+      // "late": the period has begun (past the grace minutes) and the teacher has not started it yet.
       const state = session
         ? session.status
         : isPast || (isToday && clock.minute >= s.endMinute)
           ? 'missed'
-          : 'scheduled';
+          : isToday && clock.minute >= s.startMinute + LATE_START_GRACE_MINUTES
+            ? 'late'
+            : 'scheduled';
       const startedLateBy = session ? Math.max(0, schoolClock(timeZone, session.startedAt).minute - s.startMinute) : null;
       return { ...withTimes(s), sessions: undefined, session, state, startedLateBy };
     });
@@ -294,7 +300,9 @@ export class TimetableService {
     return {
       date: day,
       dayOfWeek,
-      totals: { scheduled: rows.length, live: count('live'), completed: count('completed'), missed: count('missed'), upcoming: count('scheduled') },
+      /** Minutes since midnight in the school's time zone (null for another day). */
+      nowMinute: isToday ? clock.minute : null,
+      totals: { scheduled: rows.length, live: count('live'), completed: count('completed'), missed: count('missed'), late: count('late'), upcoming: count('scheduled') },
       rows,
     };
   }

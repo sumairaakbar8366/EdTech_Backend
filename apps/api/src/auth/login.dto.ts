@@ -59,6 +59,12 @@ export class SocialTicketDto {
 }
 
 /** The main domain's single /login: email or User ID, password, and the school when choosing. */
+/** The owner's emailed sign-in code. */
+export class OwnerCodeDto {
+  @IsUUID() verificationId: string;
+  @IsString() @Matches(/^\d{6}$/) code: string;
+}
+
 export class UniversalLoginDto {
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   @IsString()

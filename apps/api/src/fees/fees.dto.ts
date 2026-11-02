@@ -115,6 +115,8 @@ export class PaymentDto {
 
 export class PaymentListQuery {
   @IsOptional() @IsUUID() studentId?: string;
+  /** Student name or admission number, receipt number or payment reference. */
+  @IsOptional() @Transform(trim) @IsString() @MaxLength(100) q?: string;
   @IsOptional() @IsDateOnly() from?: string;
   @IsOptional() @IsDateOnly() to?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page = 1;
