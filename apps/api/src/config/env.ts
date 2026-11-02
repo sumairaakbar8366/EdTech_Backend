@@ -180,6 +180,22 @@ export class Env {
   /** Sender shown on every email, e.g. "SchoolERP <no-reply@schoolerp.pk>". */
   @IsString()
   MAIL_FROM = 'Skool EdTech <no-reply@schoolerp.local>';
+
+  /** Interface the API listens on. Loopback by default: the world reaches it only through the reverse proxy (nginx). */
+  @IsString()
+  HOST = '127.0.0.1';
+
+  /** "on": the owner console needs a code emailed to the owner after the password (the default). */
+  @IsOptional()
+  @IsIn(['on', 'off'])
+  OWNER_2FA: 'on' | 'off' = 'on';
+
+  /** Key for the hashes that spot repeat registrations (defaults to the JWT secret). */
+  @IsOptional()
+  @IsString()
+  @MinLength(32)
+  REGISTRATION_HASH_SECRET?: string;
+
 }
 
 export function validateEnv(config: Record<string, unknown>): Env {

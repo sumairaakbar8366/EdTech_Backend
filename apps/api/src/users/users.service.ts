@@ -127,8 +127,9 @@ export class UsersService {
    * The email is the person's own; with the code they received it is saved as verified and the
    * welcome email carries the temporary password too.
    */
-  async grant(schoolId: string, actorId: string, dto: GrantAccessDto) {
-    const verified = dto.verification ? await this.redeem(schoolId, actorId, dto.verification, dto.email) : null;
+  /** `preVerified`: an email the person already proved themselves (Google or an emailed code on an access request). */
+  async grant(schoolId: string, actorId: string, dto: GrantAccessDto, preVerified?: string) {
+    const verified = preVerified ?? (dto.verification ? await this.redeem(schoolId, actorId, dto.verification, dto.email) : null);
     const login = await this.prisma.inSchoolTransaction(schoolId, async (tx) => {
       const person = await this.loadPerson(tx, dto.personType, dto.personId);
       if (person.userId) throw new ConflictException('This person already has a login');

@@ -316,7 +316,23 @@ model School {
   leadershipTenures        LeadershipTenure[]
   photoFingerprints        PhotoFingerprint[]
 
+  registration   SchoolRegistration?
+  accessRequests AccessRequest[]
+  schoolForms    SchoolForm[]
+  customData     PersonCustomData[]
+  complaints     Complaint[]
+  complaintRecipients ComplaintRecipient[]
+  complaintMessages ComplaintMessage[]
+  schoolEvents   SchoolEvent[]
+  scholarshipOffers ScholarshipOffer[]
+  scholarshipRequests ScholarshipRequest[]
+  scholarshipGrants ScholarshipGrant[]
+  scholarshipCandidates ScholarshipCandidate[]
+  opportunities  SchoolOpportunity[]
+
   @@map("schools")
+  leadershipSeats LeadershipSeat[]
+  usageAlerts SchoolUsageAlert[]
 }
 
 /// Optional custom domains (page 2: Custom Domain -> Tenant Resolver -> School).
@@ -448,6 +464,7 @@ model User {
   @@unique([schoolId, email], map: "users_school_id_email_unique", where: raw("email IS NOT NULL"))
   @@index([schoolId, email])
   @@map("users")
+  leadershipSeat LeadershipSeat?
 }
 
 /// Roles per school (blueprint: role_id, school_id, name, level). RLS-protected.
@@ -3288,4 +3305,567 @@ model ReportCardChange {
 
   @@index([reportCardId, createdAt])
   @@map("report_card_changes")
+}
+
+
+// ─── Secure registration, access requests, forms, complaints, sponsorship (2026-10-28) ─────────────
+
+enum RegistrationStatus {
+  /// Submitted and waiting for the owner's team to verify it by hand.
+  pending
+  /// Declined by the owner; nothing was created.
+  rejected
+  /// Verified and approved: the school exists.
+  approved
+
+  @@map("registration_status")
+}
+
+/// Platform-wide editable forms. kind = "school_registration" (asked of new schools) or
+/// "scholarship_request" (sent to a school that is offered a scholarship). `definition` is a custom form
+/// (see common/custom-form.ts); `settings` holds the kind's own switches (trial bands, required checks).
+model PlatformForm {
+  kind       String   @id
+  definition Json
+  settings   Json?
+  updatedBy  String?  @map("updated_by")
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("platform_forms")
+}
+
+/// A school's application to join: what was asked, the owner's team's verification, and the school it created once approved.
+model SchoolRegistration {
+  id              String             @id @default(uuid(7)) @db.Uuid
+  status          RegistrationStatus
+  schoolName      String             @map("school_name")
+  ntn             String
+  registrationNo  String?            @map("registration_no")
+  ownerFirstName  String             @map("owner_first_name")
+  ownerLastName   String             @map("owner_last_name")
+  designation     String
+  /// HMAC of the national ID (to spot the same person registering twice) and its last 4 digits.
+  ownerNicHash    String             @map("owner_nic_hash")
+  ownerNicLast4   String             @map("owner_nic_last4")
+  /// The CNIC, encrypted, kept only until the team has verified it by hand (then erased).
+  ownerNicEnc     String?            @map("owner_nic_enc")
+  /// The team's checklist: { items: { cnic, ntn, school, contact }, by, at, note }.
+  verification    Json?
+  decidedBy       String?            @map("decided_by")
+  decidedAt       DateTime?          @map("decided_at") @db.Timestamptz(3)
+  decisionNote    String?            @map("decision_note")
+  email           String
+  phone           String
+  emailMethod     String             @map("email_method")
+  phoneMethod     String?            @map("phone_method")
+  country         String
+  province        String
+  city            String
+  address         String
+  schoolType      String?            @map("school_type")
+  studentCount    Int                @map("student_count")
+  teacherCount    Int                @map("teacher_count")
+  staffCount      Int                @default(0) @map("staff_count")
+  answers         Json?
+  checks          Json
+  failureReasons  String[]           @map("failure_reasons")
+  trialDays       Int?               @map("trial_days")
+  schoolId        String?            @unique @map("school_id") @db.Uuid
+  ip              String?
+  userAgent       String?            @map("user_agent")
+  createdAt       DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school School? @relation(fields: [schoolId], references: [id], onDelete: SetNull)
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([ntn])
+  @@index([ownerNicHash])
+  @@index([email])
+  @@map("school_registrations")
+}
+
+enum AccessRequestStatus {
+  pending
+  approved
+  rejected
+
+  @@map("access_request_status")
+}
+
+/// Someone at a school asking for a login: proven email (Google or emailed code), then the admin decides.
+/// Credentials are sent only when an administrator approves.
+model AccessRequest {
+  id            String              @id @default(uuid(7)) @db.Uuid
+  schoolId      String              @map("school_id") @db.Uuid
+  email         String
+  emailMethod   String              @map("email_method")
+  firstName     String              @map("first_name")
+  lastName      String              @map("last_name")
+  phone         String?
+  requestedRole String              @map("requested_role")
+  note          String?
+  answers       Json?
+  status        AccessRequestStatus @default(pending)
+  decidedBy     String?             @map("decided_by") @db.Uuid
+  decidedAt     DateTime?           @map("decided_at") @db.Timestamptz(3)
+  decisionNote  String?             @map("decision_note")
+  /// The login created on approval.
+  userId        String?             @map("user_id") @db.Uuid
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, status, createdAt(sort: Desc)])
+  @@index([schoolId, email])
+  @@map("access_requests")
+}
+
+/// A school's own registration form for one kind of person (teacher, staff, student, guardian, access).
+model SchoolForm {
+  schoolId   String   @map("school_id") @db.Uuid
+  kind       String
+  definition Json
+  updatedBy  String?  @map("updated_by") @db.Uuid
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@id([schoolId, kind])
+  @@map("school_forms")
+}
+
+/// Answers to a school's custom fields for one person or request (kept apart from the standard records).
+model PersonCustomData {
+  schoolId    String   @map("school_id") @db.Uuid
+  subjectType String   @map("subject_type")
+  subjectId   String   @map("subject_id") @db.Uuid
+  answers     Json
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@id([schoolId, subjectType, subjectId])
+  @@map("person_custom_data")
+}
+
+enum ComplaintSeverity {
+  low
+  normal
+  high
+  urgent
+
+  @@map("complaint_severity")
+}
+
+enum ComplaintStatus {
+  open
+  in_review
+  resolved
+  closed
+
+  @@map("complaint_status")
+}
+
+/// A complaint raised by a student, parent, teacher or staff member to the principal / admin.
+/// When anonymous, handlers never see who raised it; the author still follows the replies.
+model Complaint {
+  id                String            @id @default(uuid(7)) @db.Uuid
+  schoolId          String            @map("school_id") @db.Uuid
+  ticketNo          String            @map("ticket_no")
+  category          String
+  severity          ComplaintSeverity @default(normal)
+  subject           String
+  body              String
+  anonymous         Boolean           @default(false)
+  complainantUserId String            @map("complainant_user_id") @db.Uuid
+  complainantRole   String            @map("complainant_role")
+  /// teacher | student | staff | parent | principal | admin | school | other
+  againstKind       String            @map("against_kind")
+  againstUserId     String?           @map("against_user_id") @db.Uuid
+  againstName       String?           @map("against_name")
+  /// Who may see it: principal | admin | both (a complaint about one of them goes to the other).
+  handlerScope      String            @map("handler_scope")
+  status            ComplaintStatus   @default(open)
+  resolvedAt        DateTime?         @map("resolved_at") @db.Timestamptz(3)
+  resolvedBy        String?           @map("resolved_by") @db.Uuid
+  resolutionNote    String?           @map("resolution_note")
+  lastActivityAt    DateTime          @default(now()) @map("last_activity_at") @db.Timestamptz(3)
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  /// Who it was sent to, in words ("Parents of Ali Khan", "Parents of Class 5-A", "Principal"); empty = the school's management.
+  sentTo     String?              @map("sent_to")
+  school     School               @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  messages   ComplaintMessage[]
+  recipients ComplaintRecipient[]
+
+  @@unique([schoolId, ticketNo])
+  @@unique([id, schoolId])
+  @@index([schoolId, status, lastActivityAt(sort: Desc)])
+  @@index([schoolId, complainantUserId])
+  @@map("complaints")
+}
+
+/// A person a complaint was sent to besides the principal / admin (the parents of a student or class).
+model ComplaintRecipient {
+  complaintId String @map("complaint_id") @db.Uuid
+  userId      String @map("user_id") @db.Uuid
+  schoolId    String @map("school_id") @db.Uuid
+
+  school    School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  complaint Complaint @relation(fields: [complaintId, schoolId], references: [id, schoolId], onDelete: Cascade)
+
+  @@id([complaintId, userId])
+  @@index([schoolId, userId])
+  @@map("complaint_recipients")
+}
+
+model ComplaintMessage {
+  id           String   @id @default(uuid(7)) @db.Uuid
+  schoolId     String   @map("school_id") @db.Uuid
+  complaintId  String   @map("complaint_id") @db.Uuid
+  authorUserId String?  @map("author_user_id") @db.Uuid
+  /// complainant | handler | system
+  side         String
+  /// message (seen by both) | note (handlers only) | event (status change)
+  kind         String   @default("message")
+  body         String
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school    School    @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  complaint Complaint @relation(fields: [complaintId, schoolId], references: [id, schoolId], onDelete: Cascade)
+
+  @@index([complaintId, createdAt])
+  @@map("complaint_messages")
+}
+
+/// Something happening at the school (admissions open, science fair, sports day...). Shared events
+/// are what the platform owner sees as a chance to offer a scholarship or sponsorship.
+model SchoolEvent {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  schoolId    String    @map("school_id") @db.Uuid
+  title       String
+  kind        String
+  startsOn    DateTime  @map("starts_on") @db.Date
+  endsOn      DateTime? @map("ends_on") @db.Date
+  description String?
+  /// Tell the platform's sponsorship team so it can offer support.
+  shareWithSponsors Boolean @default(true) @map("share_with_sponsors")
+  createdBy   String?   @map("created_by") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId, startsOn(sort: Desc)])
+  @@map("school_events")
+}
+
+// --- Sponsorship and scholarships (platform) ---
+
+model Sponsor {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  name        String
+  kind        String   @default("company")
+  contactName String?  @map("contact_name")
+  email       String?
+  phone       String?
+  notes       String?
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  programs ScholarshipProgram[]
+
+  @@map("sponsors")
+}
+
+enum ScholarshipProgramStatus {
+  draft
+  /// Looking for schools / students: offers are going out.
+  recruiting
+  /// Awards are running.
+  live
+  closed
+
+  @@map("scholarship_program_status")
+}
+
+model ScholarshipProgram {
+  id          String                   @id @default(uuid(7)) @db.Uuid
+  title       String
+  sponsorId   String?                  @map("sponsor_id") @db.Uuid
+  description String?
+  criteria    String?
+  awardAmount Decimal?                 @map("award_amount") @db.Decimal(12, 2)
+  budget      Decimal?                 @db.Decimal(14, 2)
+  currency    String                   @default("PKR")
+  slots       Int                      @default(0)
+  deadline    DateTime?                @db.Date
+  /// Class levels (grades) it is for, e.g. [9, 10, 11, 12]; empty = every class.
+  targetLevels         Int[]   @default([]) @map("target_levels")
+  /// "yearly" or "semester": how often a new list of students is chosen.
+  period               String  @default("yearly")
+  /// The cycle now open, e.g. "2026" or "2026 · Semester 1"; candidates are listed per cycle.
+  currentPeriod        String? @map("current_period")
+  /// Class 12 award that continues into undergraduate studies.
+  continuesToUndergrad Boolean @default(false) @map("continues_to_undergrad")
+  /// Merit and need rules the school's shortlist is built with.
+  minAverage           Int     @default(70) @map("min_average")
+  minAttendance        Int     @default(85) @map("min_attendance")
+  needRequired         Boolean @default(true) @map("need_required")
+  status      ScholarshipProgramStatus @default(draft)
+  createdAt   DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime                 @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  sponsor  Sponsor?             @relation(fields: [sponsorId], references: [id], onDelete: SetNull)
+  offers   ScholarshipOffer[]
+  requests ScholarshipRequest[]
+  grants   ScholarshipGrant[]
+  candidates ScholarshipCandidate[]
+
+  @@index([status])
+  @@map("scholarship_programs")
+}
+
+enum ScholarshipOfferStatus {
+  sent
+  viewed
+  submitted
+  declined
+  withdrawn
+
+  @@map("scholarship_offer_status")
+}
+
+/// "We would like to support your school": emailed with a private link to the request form.
+model ScholarshipOffer {
+  id            String                 @id @default(uuid(7)) @db.Uuid
+  programId     String                 @map("program_id") @db.Uuid
+  schoolId      String                 @map("school_id") @db.Uuid
+  opportunityId String?                @map("opportunity_id") @db.Uuid
+  tokenHash     String                 @unique @map("token_hash")
+  message       String?
+  status        ScholarshipOfferStatus @default(sent)
+  sentAt        DateTime               @default(now()) @map("sent_at") @db.Timestamptz(3)
+  viewedAt      DateTime?              @map("viewed_at") @db.Timestamptz(3)
+  respondedAt   DateTime?              @map("responded_at") @db.Timestamptz(3)
+  expiresAt     DateTime               @map("expires_at") @db.Timestamptz(3)
+  sentBy        String?                @map("sent_by")
+
+  program     ScholarshipProgram  @relation(fields: [programId], references: [id], onDelete: Cascade)
+  school      School              @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  opportunity SchoolOpportunity?  @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  request     ScholarshipRequest?
+
+  @@index([schoolId, status])
+  @@index([programId, status])
+  @@map("scholarship_offers")
+}
+
+enum ScholarshipRequestStatus {
+  submitted
+  approved
+  rejected
+
+  @@map("scholarship_request_status")
+}
+
+model ScholarshipRequest {
+  id                String                   @id @default(uuid(7)) @db.Uuid
+  offerId           String                   @unique @map("offer_id") @db.Uuid
+  programId         String                   @map("program_id") @db.Uuid
+  schoolId          String                   @map("school_id") @db.Uuid
+  answers           Json
+  studentsRequested Int                      @default(0) @map("students_requested")
+  contactName       String?                  @map("contact_name")
+  contactEmail      String?                  @map("contact_email")
+  status            ScholarshipRequestStatus @default(submitted)
+  reviewNote        String?                  @map("review_note")
+  decidedAt         DateTime?                @map("decided_at") @db.Timestamptz(3)
+  createdAt         DateTime                 @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  offer   ScholarshipOffer   @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  program ScholarshipProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  school  School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  grants  ScholarshipGrant[]
+
+  @@index([programId, status])
+  @@index([schoolId])
+  @@map("scholarship_requests")
+}
+
+enum ScholarshipGrantStatus {
+  pledged
+  disbursed
+  cancelled
+
+  @@map("scholarship_grant_status")
+}
+
+/// One child receiving a scholarship (name and class kept as text: the school's records stay the school's).
+model ScholarshipGrant {
+  id          String                 @id @default(uuid(7)) @db.Uuid
+  programId   String                 @map("program_id") @db.Uuid
+  schoolId    String                 @map("school_id") @db.Uuid
+  requestId   String?                @map("request_id") @db.Uuid
+  studentName String                 @map("student_name")
+  className   String?                @map("class_name")
+  amount      Decimal                @db.Decimal(12, 2)
+  status      ScholarshipGrantStatus @default(pledged)
+  awardedOn   DateTime               @map("awarded_on") @db.Date
+  disbursedOn DateTime?              @map("disbursed_on") @db.Date
+  note        String?
+  createdAt   DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  program ScholarshipProgram  @relation(fields: [programId], references: [id], onDelete: Cascade)
+  school  School              @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  request ScholarshipRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+
+  @@index([programId, status])
+  @@index([schoolId])
+  @@map("scholarship_grants")
+}
+
+/// A school event or open admissions the owner can answer with an offer (mirrored from the school).
+model SchoolOpportunity {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  schoolId   String   @map("school_id") @db.Uuid
+  sourceType String   @map("source_type")
+  sourceId   String   @map("source_id")
+  title      String
+  kind       String
+  startsOn   DateTime? @map("starts_on") @db.Date
+  details    String?
+  /// new | offered | dismissed
+  status     String   @default("new")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  school School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  offers ScholarshipOffer[]
+
+  @@unique([sourceType, sourceId])
+  @@index([status, createdAt(sort: Desc)])
+  @@map("school_opportunities")
+}
+
+// --- The owner's posts on the public site ---
+
+model SitePost {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  /// award | scholarship | event | news
+  kind        String
+  title       String
+  body        String
+  eventName   String?   @map("event_name")
+  eventDate   DateTime? @map("event_date") @db.Date
+  location    String?
+  schoolName  String?   @map("school_name")
+  published   Boolean   @default(true)
+  publishedAt DateTime  @default(now()) @map("published_at") @db.Timestamptz(3)
+  createdBy   String?   @map("created_by")
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  images SitePostImage[]
+
+  @@index([published, publishedAt(sort: Desc)])
+  @@map("site_posts")
+}
+
+model SitePostImage {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  postId     String   @map("post_id") @db.Uuid
+  fileName   String   @map("file_name")
+  mimeType   String   @map("mime_type")
+  sizeBytes  Int      @map("size_bytes")
+  storageKey String   @unique @map("storage_key")
+  caption    String?
+  sortOrder  Int      @default(0) @map("sort_order")
+
+  post SitePost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, sortOrder])
+  @@map("site_post_images")
+}
+
+/// Which guided tours a person has finished or skipped. subject = "u:<user id>" or "p:<owner id>".
+model TourProgress {
+  subject   String
+  tourKey   String   @map("tour_key")
+  status    String
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@id([subject, tourKey])
+  @@map("tour_progress")
+}
+
+/// A student a school confirmed for a program in one cycle (name, class and scores are copied: the school's records stay the school's).
+model ScholarshipCandidate {
+  id          String   @id @default(uuid(7)) @db.Uuid
+  programId   String   @map("program_id") @db.Uuid
+  schoolId    String   @map("school_id") @db.Uuid
+  requestId   String?  @map("request_id") @db.Uuid
+  periodLabel String   @map("period_label")
+  /// The student's id at the school (no foreign key: it lives in the school's own data).
+  studentRef  String   @map("student_ref") @db.Uuid
+  studentName String   @map("student_name")
+  className   String   @map("class_name")
+  level       Int
+  average     Float
+  attendance  Float
+  meritScore  Int      @map("merit_score")
+  needScore   Int      @map("need_score")
+  rankScore   Int      @map("rank_score")
+  reasons     Json
+  needNote    String   @map("need_note")
+  /// confirmed (by the school) | selected | rejected | awarded
+  status      String   @default("confirmed")
+  grantId     String?  @map("grant_id") @db.Uuid
+  confirmedBy String?  @map("confirmed_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  decidedAt   DateTime? @map("decided_at") @db.Timestamptz(3)
+
+  program ScholarshipProgram @relation(fields: [programId], references: [id], onDelete: Cascade)
+  school  School             @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([programId, schoolId, studentRef, periodLabel])
+  @@index([programId, periodLabel, status])
+  @@index([schoolId])
+  @@map("scholarship_candidates")
+}
+
+/// A senior seat (principal, director, vice principal…): the login works in the principal's area; the title and the hidden dashboard parts are the school admin's choice.
+model LeadershipSeat {
+  id             String   @id @default(uuid(7)) @db.Uuid
+  schoolId       String   @map("school_id") @db.Uuid
+  userId         String   @unique @map("user_id") @db.Uuid
+  titleKey       String   @map("title_key")
+  titleLabel     String   @map("title_label")
+  hiddenSections String[] @default([]) @map("hidden_sections")
+  createdBy      String?  @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
+  @@map("leadership_seats")
+}
+
+/// A school that is near or over a size limit of its plan (students, staff, stored files). Over for longer than the grace period pauses access until the plan changes.
+model SchoolUsageAlert {
+  id            String    @id @default(uuid(7)) @db.Uuid
+  schoolId      String    @map("school_id") @db.Uuid
+  metric        String
+  level         String
+  used          Int
+  limit         Int
+  firstOverAt   DateTime? @map("first_over_at") @db.Timestamptz(3)
+  graceEndsAt   DateTime? @map("grace_ends_at") @db.Timestamptz(3)
+  notifiedLevel String?   @map("notified_level")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, metric])
+  @@map("school_usage_alerts")
 }

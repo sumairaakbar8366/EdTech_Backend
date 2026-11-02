@@ -8,7 +8,8 @@ import { isDelegateRole } from '../users/delegates.js';
 const WRITE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 /** Writes that are not changes worth auditing (session handling, read markers). */
-const SKIP = [/^\/auth\//, /^\/notifications\//, /\/read$/];
+/** Complaints are not audited by who sent them: an anonymous complaint must stay anonymous (the complaint keeps its own history). */
+const SKIP = [/^\/auth\//, /^\/notifications\//, /\/read$/, /^\/complaints/];
 
 /**
  * Page 14 audit trail: every successful write by a school user is recorded with who, what, when

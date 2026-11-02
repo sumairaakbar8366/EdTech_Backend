@@ -16,5 +16,6 @@ ${opts.code ? `<div style="margin:18px 0;font-size:30px;font-weight:700;letter-s
 ${opts.action ? `<p style="margin:20px 0"><a href="${esc(opts.action.url)}" style="display:inline-block;background:#c2410c;color:#ffffff;text-decoration:none;font-weight:600;padding:11px 20px;border-radius:7px">${esc(opts.action.label)}</a></p><p style="margin:0 0 14px;font-size:13px;color:#6b7280;word-break:break-all">${esc(opts.action.url)}</p>` : ''}
 <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0 12px">
 <p style="margin:0;font-size:12px;color:#6b7280">${esc(opts.footer ?? 'This is an automatic message from Skool EdTech. Please do not reply.')}</p>
+<p style="margin:8px 0 0;font-size:12px;color:#6b7280">Skool EdTech will never ask for your password or a code by email, phone or WhatsApp. If a message asks for one, do not share it.</p>
 </div></body></html>`;
 }

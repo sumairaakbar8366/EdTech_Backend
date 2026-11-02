@@ -112,9 +112,10 @@ export class SchoolProvisioningService implements OnApplicationBootstrap {
 
   /**
    * `temporaryAdminPassword: false` for development seeding and self-service sign-up (the admin chose
-   * the password); `adminEmailVerified` when the sign-up already confirmed the email with a code.
+   * the password); `adminEmailVerified` when the sign-up already confirmed the email with a code;
+   * `trialDays` sets the trial length (the verified registration sizes it to the school).
    */
-  async provision(dto: CreateSchoolDto, now: Date = new Date(), temporaryAdminPassword = true, adminEmailVerified = false) {
+  async provision(dto: CreateSchoolDto, now: Date = new Date(), temporaryAdminPassword = true, adminEmailVerified = false, trialDays?: number) {
     if (RESERVED_SLUGS.has(dto.slug)) throw new BadRequestException('This slug is reserved');
     if (dto.timezone && !isValidTimeZone(dto.timezone)) throw new BadRequestException('Unknown timezone');
 
@@ -127,7 +128,10 @@ export class SchoolProvisioningService implements OnApplicationBootstrap {
 
     await this.ensurePermissionCatalog();
     const permissionIds = await this.permissionIdMap();
-    const { trialStartsAt, trialEndsAt } = trialPeriod(now);
+    const period = trialPeriod(now);
+    const trialStartsAt = period.trialStartsAt;
+    // A verified registration earns a trial sized to the school; everyone else gets the standard month.
+    const trialEndsAt = trialDays ? new Date(now.getTime() + trialDays * 86_400_000) : period.trialEndsAt;
 
     const result = await this.prisma.$transaction(
       async (tx) => {

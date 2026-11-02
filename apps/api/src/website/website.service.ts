@@ -9,6 +9,7 @@ import type { Prisma } from '../generated/prisma/client.js';
 import { RedisService } from '../redis/redis.service.js';
 import { toDateOnly } from '../common/date-only.js';
 import { NotificationsService } from '../communication/notifications.service.js';
+import { OpportunitiesService } from '../sponsorship/opportunities.service.js';
 import { DOCUMENT_TYPES, detectAllowedType, safeFileName } from '../documents/file-type.js';
 import { ApplicationDetailsDto } from '../hiring/hiring.dto.js';
 import { HiringService } from '../hiring/hiring.service.js';
@@ -80,6 +81,7 @@ export class WebsiteService {
     private readonly notifications: NotificationsService,
     private readonly plan: SubscriptionStateService,
     private readonly redis: RedisService,
+    private readonly opportunities: OpportunitiesService,
   ) {}
 
   // --- Admin ---------------------------------------------------------------------------
@@ -93,8 +95,11 @@ export class WebsiteService {
     return { website: website ?? { schoolId, published: true, admissionsOpen: true, careersOpen: true, feesPublic: false }, media };
   }
 
-  update(schoolId: string, dto: WebsiteDto) {
-    return this.prisma.forSchool(schoolId).schoolWebsite.upsert({ where: { schoolId }, create: { schoolId, ...dto }, update: dto });
+  async update(schoolId: string, dto: WebsiteDto) {
+    const site = await this.prisma.forSchool(schoolId).schoolWebsite.upsert({ where: { schoolId }, create: { schoolId, ...dto }, update: dto });
+    // Open admissions are a chance for the platform to offer a scholarship.
+    if (dto.admissionsOpen === true) await this.opportunities.fromAdmissions(schoolId);
+    return site;
   }
 
   /** The school's admission form, with its classes for the class filter. */

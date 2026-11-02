@@ -16,6 +16,8 @@ const CODE_PURPOSE = {
   verify: 'confirm your email address',
   change: 'confirm your new email address',
   signup: 'confirm your email and create your school',
+  access: 'ask for access to your school’s dashboard',
+  owner: 'sign in to the owner console',
 } as const;
 
 /**
@@ -82,6 +84,48 @@ export const TEMPLATES = {
         html: emailLayout({ heading: 'Your verification code', paragraphs: [lead], code, footer: tail }),
       };
     },
+  }),
+
+  /** The applicant's receipt: the application is with the team. */
+  registration_received: define<{ name: string; schoolName: string; reference: string }>({
+    channels: EMAIL,
+    render: ({ name, schoolName, reference }) => {
+      const lines = [`Dear ${name},`, `Thank you for applying to join Skool EdTech with ${schoolName}.`, 'Our team now verifies your details, including your CNIC and NTN. This usually takes a few working days. When it is approved, your school is created and your User ID and password are emailed to you.', `Your reference: ${reference}`];
+      return { subject: `We received your application for ${schoolName}`, text: lines.join('\n\n'), html: emailLayout({ heading: 'Application received', paragraphs: lines }) };
+    },
+  }),
+
+  /** The application could not be approved: what to fix. */
+  registration_rejected: define<{ name: string; schoolName: string; reason: string }>({
+    channels: EMAIL,
+    render: ({ name, schoolName, reason }) => {
+      const lines = [`Dear ${name},`, `We could not approve the application for ${schoolName}.`, `Reason: ${reason}`, 'You are welcome to apply again with the corrected details, or reply to this email if you need help.'];
+      return { subject: `Your application for ${schoolName}`, text: lines.join('\n\n'), html: emailLayout({ heading: 'Application not approved', paragraphs: lines }) };
+    },
+  }),
+
+  /** The platform offers a school a scholarship or sponsorship; the link opens the request form. */
+  scholarship_offer: define<{ schoolName: string; programTitle: string; sponsor: string | null; reason: string | null; message: string | null; url: string; deadline: string | null; amount: string | null }>({
+    channels: EMAIL,
+    render: ({ schoolName, programTitle, sponsor, reason, message, url, deadline, amount }) => {
+      const lines = [
+        `Skool EdTech would like to support ${schoolName} with “${programTitle}”${sponsor ? `, sponsored by ${sponsor}` : ''}.`,
+        ...(reason ? [`We noticed: ${reason}.`] : []),
+        ...(amount ? [`Each award: ${amount}.`] : []),
+        ...(message ? [message] : []),
+        `Please fill in the short request form${deadline ? ` before ${deadline}` : ''}. The link is private to your school.`,
+      ];
+      return { subject: `A scholarship offer for ${schoolName}`, text: `${lines.join('\n\n')}\n\n${url}`, html: emailLayout({ heading: `Scholarship offer: ${programTitle}`, paragraphs: lines, action: { label: 'Open the request form', url } }) };
+    },
+  }),
+
+  /** The same kind of code to a phone: WhatsApp (or SMS). */
+  phone_code: define<{ code: string; purpose: keyof typeof CODE_PURPOSE; minutes: number }>({
+    channels: ['whatsapp', 'sms'],
+    render: ({ code, purpose, minutes }) => ({
+      subject: 'Skool EdTech verification code',
+      text: `Skool EdTech: ${code} is your code to ${CODE_PURPOSE[purpose]}. It expires in ${minutes} minutes. Do not share it with anyone.`,
+    }),
   }),
 
   /** "Forgot password": a one-use link. */
@@ -239,6 +283,15 @@ export const TEMPLATES = {
         'Your password stays the same. If you sign in with your email, nothing changes for you.',
       ];
       return { subject: `Your new ${d.schoolName} User ID: ${d.newLoginId}`, text: `${p.join('\n\n')}\n\n${d.signInUrl}`, html: emailLayout({ heading: 'Your User ID has changed', paragraphs: p, action: { label: 'Sign in', url: d.signInUrl } }) };
+    },
+  }),
+
+  /** A school is near or over a size limit of its plan. */
+  plan_usage: define<{ name: string; schoolName: string; lines: string[]; url: string; over: boolean }>({
+    channels: EMAIL,
+    render: (d) => {
+      const heading = d.over ? 'Your school has outgrown its plan' : 'Your school is close to its plan limit';
+      return { subject: `${heading} · ${d.schoolName}`, text: `${d.lines.join('\n')}\n\n${d.url}`, html: emailLayout({ heading, paragraphs: [`Hello ${d.name},`, ...d.lines], action: { label: 'See plans', url: d.url } }) };
     },
   }),
 

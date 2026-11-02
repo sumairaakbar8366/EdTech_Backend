@@ -21,7 +21,12 @@ export interface SubscriptionState {
   /** Days until the current phase ends (trial/active: until endsAt; grace: until graceEndsAt). */
   daysLeft: number | null;
   features: PlanFeature[];
+  /** Where the school is near or over a size limit of its plan (students, staff, stored files). */
+  usage: { metric: string; level: string; used: number; limit: number; graceEndsAt: string | null }[];
+  /** Over a limit for longer than the grace period: locked until the plan fits (nothing deleted). */
+  usagePaused: boolean;
 }
+type Computed = Omit<SubscriptionState, 'usage' | 'usagePaused'>;
 
 /**
  * The school's subscription as the product sees it: trial → (paid) active → grace (GRACE_DAYS of
@@ -41,9 +46,15 @@ export class SubscriptionStateService {
   async get(schoolId: string): Promise<SubscriptionState> {
     const hit = this.cache.get(schoolId);
     if (hit && Date.now() - hit.at < TTL_MS) return hit.state;
-    const state = await this.compute(schoolId);
+    const state = await this.withUsage(schoolId, await this.compute(schoolId));
     this.cache.set(schoolId, { at: Date.now(), state });
     return state;
+  }
+
+  private async withUsage(schoolId: string, base: Computed): Promise<SubscriptionState> {
+    const alerts = await this.prisma.schoolUsageAlert.findMany({ where: { schoolId }, select: { metric: true, level: true, used: true, limit: true, graceEndsAt: true } });
+    const usagePaused = alerts.some((a) => a.graceEndsAt && a.graceEndsAt.getTime() < Date.now());
+    return { ...base, locked: base.locked || usagePaused, usagePaused, usage: alerts.map((a) => ({ ...a, graceEndsAt: a.graceEndsAt?.toISOString() ?? null })) };
   }
 
   private async domainAddonActive(schoolId: string): Promise<boolean> {
@@ -51,7 +62,7 @@ export class SubscriptionStateService {
     return !!s?.customDomainUntil && s.customDomainUntil > new Date();
   }
 
-  private async compute(schoolId: string): Promise<SubscriptionState> {
+  private async compute(schoolId: string): Promise<Computed> {
     const sub =
       (await this.prisma.subscription.findFirst({ where: { schoolId, status: { in: ['trialing', 'active', 'past_due'] } }, orderBy: { createdAt: 'desc' }, include: TIER })) ??
       (await this.prisma.subscription.findFirst({ where: { schoolId }, orderBy: { createdAt: 'desc' }, include: TIER }));

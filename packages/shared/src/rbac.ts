@@ -25,6 +25,7 @@ export const MODULES = [
   'communication',
   'documents',
   'audit',
+  'complaints',
 ] as const;
 
 export type Module = (typeof MODULES)[number];
@@ -67,6 +68,7 @@ type MatrixRow = Record<MatrixRole, AccessLevel | null>;
  * Approved 2026-10-01: the academics, exams, leave, communication, documents and audit rows,
  * and the non-teaching staff column (own staff record, own attendance, own payroll, own leave,
  * own communication and own documents).
+ * Approved 2026-10-28: the complaints row (everyone may raise one and follow it; the principal and the admin handle them).
  * Approved 2026-10-19: the principal column (oversees everything, approvals with the admin, basic
  * edits; school settings, billing and Users & Access stay with the School Admin).
  */
@@ -90,6 +92,7 @@ export const PERMISSION_MATRIX: Record<Module, MatrixRow> = {
   leave:         { principal: 'approve', school_admin: 'approve', accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: null,     parent: null },
   communication: { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: 'view',   parent: 'own' },
   documents:     { principal: 'crud',    school_admin: 'crud',    accounts: 'view',    teacher: 'own',   non_teaching_staff: 'own',  student: 'own',    parent: 'children' },
+  complaints:    { principal: 'crud',    school_admin: 'crud',    accounts: 'own',     teacher: 'own',   non_teaching_staff: 'own',  student: 'own',    parent: 'own' },
   audit:         { principal: 'view',    school_admin: 'view',    accounts: null,      teacher: null,    non_teaching_staff: null,   student: null,     parent: null },
 };
 

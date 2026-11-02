@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { Env } from '../config/env.js';
@@ -17,6 +17,8 @@ import { PasswordResetService, RESET_TTL_MINUTES } from './password-reset.servic
 import { PasswordService } from './password.service.js';
 import { RefreshTokenService, type TokenSubject } from './refresh-token.service.js';
 import { VerificationCodesService } from './verification-codes.service.js';
+import { LoginLockService } from './login-lock.service.js';
+import { RedisService } from '../redis/redis.service.js';
 import type { SchoolScopedClient } from '../prisma/prisma.service.js';
 
 export type AccessTokenPayload =
@@ -40,7 +42,7 @@ const ROLE_LABEL: Record<string, string> = { principal: 'Principal', school_admi
 type SignInCandidate = { kind: 'platform'; adminId: string; name: string } | { kind: 'school'; school: { id: string; slug: string; name: string }; userId: string };
 
 /** Where a main-site sign-in continues: straight into one account, or a choice of schools. */
-export type SignInOutcome = { continueUrl: string } | { choose: { school: string; name: string }[] };
+export type SignInOutcome = { continueUrl: string } | { choose: { school: string; name: string }[] } | { twoFactor: { verificationId: string; email: string } };
 /** Google sign-in on the main site with no account yet: the person is offered the free trial instead. */
 export type SocialSignInOutcome = SignInOutcome | { noAccount: { email: string } };
 
@@ -51,6 +53,7 @@ export class AuthService {
 
   /** EMAIL_VERIFICATION=off (testing only): nobody is asked to confirm their email after signing in. */
   private readonly emailCheckOff: boolean;
+  private readonly owner2fa: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -67,10 +70,13 @@ export class AuthService {
     private readonly social: SocialIdentityService,
     private readonly alerts: OwnerAlertsService,
     private readonly notifications: NotificationsService,
+    private readonly lock: LoginLockService,
+    private readonly redis: RedisService,
     config: ConfigService<Env, true>,
   ) {
     this.accessTtl = config.get('JWT_ACCESS_TTL_SECONDS', { infer: true });
     this.emailCheckOff = config.get('EMAIL_VERIFICATION', { infer: true }) === 'off';
+    this.owner2fa = config.get('OWNER_2FA', { infer: true }) !== 'off';
   }
 
   /**
@@ -80,6 +86,8 @@ export class AuthService {
    */
   async login(tenant: TenantContext, identifier: string, password: string, ctx: LoginContext = {}): Promise<IssuedTokens> {
     if (tenant.kind === 'platform') {
+      // The owner signs in on the main page, where a code emailed to them follows the password.
+      if (this.owner2fa) throw new ForbiddenException('Sign in on the main sign-in page.');
       const admin = await this.prisma.platformAdmin.findUnique({ where: { email: identifier.toLowerCase() } });
       const ok = await this.passwords.verify(admin?.passwordHash, password);
       if (!admin || !ok || !admin.isActive) {
@@ -91,6 +99,7 @@ export class AuthService {
       return this.issue({ scope: 'platform', sub: admin.id });
     }
 
+    await this.lock.assertOpen(`${tenant.schoolId}:${identifier}`);
     const db = this.prisma.forSchool(tenant.schoolId);
     const byEmail = identifier.includes('@');
     const user = await db.user.findFirst({
@@ -100,9 +109,11 @@ export class AuthService {
     const ok = await this.passwords.verify(user?.passwordHash, password);
     const who = user && { userId: user.id, loginId: user.loginId, name: `${user.firstName} ${user.lastName}`, roles: user.userRoles.map((r) => r.role.key) };
     if (!user || !ok || user.status !== 'active') {
+      await this.lock.fail(`${tenant.schoolId}:${identifier}`);
       await this.events.record({ ...ctx, ...who, schoolId: tenant.schoolId, identifier, success: false, reason: !user ? 'unknown account' : !ok ? 'wrong password' : 'disabled' });
       throw new UnauthorizedException(INVALID_SCHOOL_CREDENTIALS);
     }
+    await this.lock.clear(`${tenant.schoolId}:${identifier}`);
     await db.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     await this.events.record({ ...ctx, ...who, schoolId: tenant.schoolId, identifier, success: true });
     return this.issue({ scope: 'school', sub: user.id, sid: tenant.schoolId }, user.mustChangePassword);
@@ -116,6 +127,7 @@ export class AuthService {
    */
   async universalLogin(identifier: string, password: string, school: string | undefined, ctx: LoginContext = {}, remember = false): Promise<SignInOutcome> {
     const id = identifier.trim();
+    await this.lock.assertOpen(`main:${id}`);
     const byEmail = id.includes('@');
     const candidates: SignInCandidate[] = [];
     if (byEmail && (!school || school === 'console')) {
@@ -129,10 +141,41 @@ export class AuthService {
       for (const f of found) if (await this.passwords.verify(f.user.passwordHash, password)) candidates.push({ kind: 'school', school: f.school, userId: f.user.id });
     }
     if (!candidates.length) {
+      await this.lock.fail(`main:${id}`);
       await this.events.record({ ...ctx, identifier: id, success: false, reason: 'no matching account (main /login)' });
       throw new UnauthorizedException(INVALID_SCHOOL_CREDENTIALS);
     }
+    await this.lock.clear(`main:${id}`);
+    // The owner console is the most valuable target: after the password, a code emailed to the owner.
+    if (candidates.length === 1 && candidates[0]!.kind === 'platform' && this.owner2fa) return this.ownerChallenge(candidates[0]!.adminId, remember);
     return this.signInOutcome(candidates, 'login', remember);
+  }
+
+  /** Emails the owner a 6-digit code; the sign-in continues only with it (see completeOwnerLogin). */
+  private async ownerChallenge(adminId: string, remember: boolean): Promise<{ twoFactor: { verificationId: string; email: string } }> {
+    const admin = await this.prisma.platformAdmin.findUniqueOrThrow({ where: { id: adminId }, select: { email: true } });
+    const sent = await this.codes.send({ owner: `o2fa:${adminId}`, email: admin.email, purpose: 'owner' });
+    await this.redis.set(`o2fa:chal:${sent.verificationId}`, JSON.stringify({ adminId, remember }), 'EX', 10 * 60);
+    const [name, domain] = admin.email.split('@');
+    return { twoFactor: { verificationId: sent.verificationId, email: `${name!.slice(0, 2)}•••@${domain}` } };
+  }
+
+  /** The owner's code (5 tries, 10 minutes, one use) turns the password sign-in into a one-time link. */
+  async completeOwnerLogin(verificationId: string, code: string, ctx: LoginContext = {}): Promise<SignInOutcome> {
+    const raw = await this.redis.get(`o2fa:chal:${verificationId}`);
+    if (!raw) throw new BadRequestException('This code has expired. Sign in again.');
+    const { adminId, remember } = JSON.parse(raw) as { adminId: string; remember: boolean };
+    try {
+      await this.codes.verify(verificationId, `o2fa:${adminId}`, code);
+    } catch (e) {
+      await this.events.record({ ...ctx, platformAdminId: adminId, identifier: 'owner', success: false, reason: 'wrong sign-in code' });
+      throw e;
+    }
+    await this.redis.del(`o2fa:chal:${verificationId}`);
+    const admin = await this.prisma.platformAdmin.findUnique({ where: { id: adminId }, select: { isActive: true } });
+    if (!admin?.isActive) throw new UnauthorizedException('This account cannot sign in');
+    const ticket = await this.tickets.create({ schoolId: '', userId: adminId, purpose: 'platform', remember });
+    return { continueUrl: this.urls.platform(`/welcome?ticket=${ticket}`) };
   }
 
   /**
@@ -148,12 +191,12 @@ export class AuthService {
     const candidates: SignInCandidate[] = found.filter((f) => f.user.length === 1).map((f) => ({ kind: 'school', school: f.school, userId: f.user[0]!.id }));
     if (!candidates.length) {
       await this.events.record({ ...ctx, schoolId: found[0]?.school.id, identifier: who.email, method: provider, success: false, reason: shared.length ? 'email shared by several accounts' : 'unknown account' });
-      // A new visitor on the main site: no error, they go on to start a free trial (with an emailed code).
+      // A new visitor on the main site: no error, they are pointed to the verified school registration.
       if (!slug && !shared.length) return { noAccount: { email: who.email } };
       throw new UnauthorizedException(
         shared.length
           ? 'Several accounts at your school use this email. Sign in with your User ID and password.'
-          : `This school has no account with ${who.email}. Ask the school office to add this email, or sign in with your User ID.`,
+          : `This school has no account with ${who.email}. Choose “Request access” on the sign-in page: once the school's administrator approves, your User ID and password are emailed to you.`,
       );
     }
     // Google has verified the address, which is what the email check would prove.
@@ -257,13 +300,14 @@ export class AuthService {
       },
     });
     const access = await this.permissions.loadUserAccess(auth.schoolId, auth.userId);
+    const seat = await this.prisma.forSchool(auth.schoolId).leadershipSeat.findUnique({ where: { userId: auth.userId }, select: { titleKey: true, titleLabel: true, hiddenSections: true } });
     const school = tenant.kind === 'school' ? { id: tenant.schoolId, name: tenant.name, slug: tenant.slug } : null;
     const { emailVerifiedAt, photoKey, employee, student, guardian, ...rest } = user;
     // Their picture: the staff / student / parent record's, else the login's own.
     const photo = employee?.photoKey ?? student?.photoKey ?? guardian?.photoKey ?? photoKey ?? null;
     /** Students and staff ask the admin to change a picture they already have. */
     const photoNeedsApproval = !!(employee?.photoKey ?? student?.photoKey) && !access.roles.some((r) => r.key === 'school_admin' || r.key === 'principal');
-    return { scope: 'school' as const, user: { ...rest, photoKey: photo, photoNeedsApproval, emailVerified: !!emailVerifiedAt || this.emailCheckOff }, school, ...access, support: auth.support ? { name: auth.support.name } : null };
+    return { scope: 'school' as const, user: { ...rest, photoKey: photo, photoNeedsApproval, emailVerified: !!emailVerifiedAt || this.emailCheckOff }, school, ...access, seat, support: auth.support ? { name: auth.support.name } : null };
   }
 
   /**

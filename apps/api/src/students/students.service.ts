@@ -142,8 +142,9 @@ export class StudentsService {
     const guardian = await db.guardian.findUnique({ where: { userId }, select: { id: true } });
     if (!guardian) throw new NotFoundException('No guardian record is linked to your account');
     const year = await db.academicYear.findFirst({ where: { isCurrent: true }, select: { id: true } });
+    // A child who has left the school is no longer shown among the parent's children.
     const links = await db.studentGuardian.findMany({
-      where: { guardianId: guardian.id },
+      where: { guardianId: guardian.id, student: { status: 'active' } },
       select: {
         relationship: true,
         student: {
